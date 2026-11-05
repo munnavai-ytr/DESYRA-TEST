@@ -1,16 +1,39 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Settings, FolderGit2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip } from '@/components/ui/tooltip';
+import { hasAnyKey } from '@/lib/keys';
 
 export function Header() {
   const pathname = usePathname();
   const isProjectsActive = pathname === '/projects' || pathname.startsWith('/project/');
   const isSettingsActive = pathname === '/settings';
+  const [hasKeys, setHasKeys] = useState<boolean>(true); // default true to avoid layout flicker before check
+
+  useEffect(() => {
+    let isMounted = true;
+    const checkKeys = async () => {
+      try {
+        const has = await hasAnyKey();
+        if (isMounted) {
+          setHasKeys(has);
+        }
+      } catch {
+        // Safe fallback
+      }
+    };
+
+    checkKeys();
+    window.addEventListener('focus', checkKeys);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('focus', checkKeys);
+    };
+  }, [pathname]);
 
   return (
     <header className="sticky top-0 z-40 w-full bg-[var(--bg)]/95 backdrop-blur-md border-b border-[var(--border)] transition-colors">
@@ -40,18 +63,24 @@ export function Header() {
             <span>Projects</span>
           </Link>
 
-          <Tooltip content="Settings" position="bottom">
+          <Tooltip content={!hasKeys ? 'Add an AI key' : 'Settings'} position="bottom">
             <Link
               href="/settings"
               aria-label="Settings"
               className={cn(
-                'flex items-center justify-center w-11 h-11 sm:w-10 sm:h-10 rounded-[var(--radius-md)] min-w-[44px] min-h-[44px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]',
+                'relative flex items-center justify-center w-11 h-11 sm:w-10 sm:h-10 rounded-[var(--radius-md)] min-w-[44px] min-h-[44px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]',
                 isSettingsActive
                   ? 'text-[var(--text)] bg-[var(--surface)] border border-[var(--border)] shadow-xs'
                   : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface)]'
               )}
             >
               <Settings className="w-4 h-4 shrink-0" />
+              {!hasKeys && (
+                <span
+                  className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[var(--accent)] shadow-[0_0_6px_rgba(255,107,26,0.9)] animate-pulse"
+                  aria-hidden="true"
+                />
+              )}
             </Link>
           </Tooltip>
         </nav>

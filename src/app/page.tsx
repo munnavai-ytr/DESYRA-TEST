@@ -3,11 +3,21 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowUp, Clock, ChevronRight } from 'lucide-react';
+import { ArrowUp, Clock, ChevronRight, KeyRound } from 'lucide-react';
 import { createProject, listProjects, type Project } from '@/lib/db';
+import {
+  hasAnyKey,
+  isSessionLocked,
+  saveDraftIdea,
+  getDraftIdea,
+  clearDraftIdea,
+} from '@/lib/keys';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Modal } from '@/components/ui/modal';
 import { useToast } from '@/components/ui/toast';
 import { formatRelativeTime } from '@/lib/utils';
+import { UnlockModal } from '@/components/settings/unlock-modal';
 
 const IDEA_CHIPS = [
   {
@@ -50,11 +60,22 @@ export default function HomePage() {
   const [idea, setIdea] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
+  const [isAddKeyModalOpen, setIsAddKeyModalOpen] = useState(false);
+  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Load recent projects from IndexedDB on mount
+  // Restore draft idea and load recent projects from IndexedDB on mount
   useEffect(() => {
     let active = true;
+
+    getDraftIdea()
+      .then((draft) => {
+        if (active && draft && !idea) {
+          setIdea(draft);
+        }
+      })
+      .catch(() => {});
+
     listProjects()
       .then((all) => {
         if (active) {
@@ -68,7 +89,7 @@ export default function HomePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-resize textarea: min 3 rows (approx 80px), max ~10 rows (approx 260px)
   const adjustTextareaHeight = useCallback(() => {
@@ -83,8 +104,16 @@ export default function HomePage() {
     adjustTextareaHeight();
   }, [idea, adjustTextareaHeight]);
 
+  // Keep draft updated in meta storage
+  const handleIdeaChange = (val: string) => {
+    if (val.length <= MAX_CHARS) {
+      setIdea(val);
+      saveDraftIdea(val).catch(() => {});
+    }
+  };
+
   const handleChipClick = (prompt: string) => {
-    setIdea(prompt);
+    handleIdeaChange(prompt);
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -105,10 +134,27 @@ export default function HomePage() {
     const trimmed = idea.trim();
     if (!trimmed || isSubmitting) return;
 
+    // 1. Check if session is locked under Passphrase Mode
+    const locked = await isSessionLocked();
+    if (locked) {
+      setIsUnlockModalOpen(true);
+      return;
+    }
+
+    // 2. Check if user has configured any AI provider key
+    const hasKey = await hasAnyKey();
+    if (!hasKey) {
+      await saveDraftIdea(trimmed);
+      setIsAddKeyModalOpen(true);
+      return;
+    }
+
+    // 3. Key exists: proceed with project creation
     setIsSubmitting(true);
     try {
       const newProject = await createProject(trimmed);
       if (newProject) {
+        await clearDraftIdea();
         toast({
           type: 'success',
           title: 'Project Initialized',
@@ -157,11 +203,7 @@ export default function HomePage() {
             id="idea-input"
             ref={textareaRef}
             value={idea}
-            onChange={(e) => {
-              if (e.target.value.length <= MAX_CHARS) {
-                setIdea(e.target.value);
-              }
-            }}
+            onChange={(e) => handleIdeaChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Build an inventory management app for a specialty coffee roaster with roast profile logs, stock alerts, and batch scheduling..."
             rows={3}
@@ -243,7 +285,7 @@ export default function HomePage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 mt-3 pt-2 text-[11px] text-[var(--disabled)] border-t border-[var(--border)]/60 tabular-nums">
-                    <Clock className="w-3 h-3 shrink-0" />
+                    <Clock className="w-3.5 h-3.5 shrink-0" />
                     <span>{formatRelativeTime(project.createdAt)}</span>
                   </div>
                 </Card>
@@ -252,6 +294,53 @@ export default function HomePage() {
           </div>
         </section>
       )}
+
+      {/* Gating Modal: Add an AI key first */}
+      <Modal
+        isOpen={isAddKeyModalOpen}
+        onClose={() => setIsAddKeyModalOpen(false)}
+        title="Add an AI key first"
+        description="DESYRA is a Bring-Your-Own-Key (BYOK) builder. You need at least one API key to synthesize code and scaffold your application."
+      >
+        <div className="space-y-4 pt-2">
+          <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--elevated)] border border-[var(--border)] text-xs text-[var(--muted)] leading-relaxed">
+            <p>
+              Your idea has been safely saved in this box and will not be lost. We support free-tier options like Google Gemini and Groq, as well as OpenRouter, OpenAI, Anthropic, or any custom local endpoint.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => setIsAddKeyModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              onClick={() => {
+                setIsAddKeyModalOpen(false);
+                router.push('/settings');
+              }}
+              leftIcon={<KeyRound className="w-4 h-4" />}
+            >
+              Go to Settings
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Unlock Modal for Passphrase Mode */}
+      <UnlockModal
+        isOpen={isUnlockModalOpen}
+        onClose={() => setIsUnlockModalOpen(false)}
+        onUnlocked={() => {
+          setIsUnlockModalOpen(false);
+          handleSubmit();
+        }}
+      />
     </div>
   );
 }

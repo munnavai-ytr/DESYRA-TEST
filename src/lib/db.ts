@@ -1,5 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import { notify } from '@/components/ui/toast';
+import type { ProviderType } from '@/lib/providers';
+import type { EncryptedPayload } from '@/lib/crypto';
 
 export interface Project {
   id: string;
@@ -9,13 +11,38 @@ export interface Project {
   updatedAt: number;
 }
 
+export interface StoredProvider {
+  id: string;
+  providerType: ProviderType;
+  label: string;
+  baseUrl?: string;
+  encryptedKey: EncryptedPayload;
+  last4: string;
+  isDefault: boolean;
+  createdAt: number;
+  updatedAt: number;
+  isCustom?: boolean;
+}
+
+export interface MetaItem {
+  key: string;
+  value: any;
+}
+
 export class DesyraDatabase extends Dexie {
   projects!: Table<Project, string>;
+  providers!: Table<StoredProvider, string>;
+  meta!: Table<MetaItem, string>;
 
   constructor() {
     super('desyra_db');
     this.version(1).stores({
       projects: 'id, title, createdAt, updatedAt',
+    });
+    this.version(2).stores({
+      projects: 'id, title, createdAt, updatedAt',
+      providers: 'id, providerType, label, isDefault, createdAt, updatedAt',
+      meta: 'key',
     });
   }
 }
@@ -161,6 +188,77 @@ export async function deleteProject(id: string): Promise<boolean> {
       title: 'Storage Error',
       message: 'Could not delete project from local storage.',
     });
+    return false;
+  }
+}
+
+/**
+ * Meta table helpers for persistent configuration, keys, and drafts.
+ */
+export async function getMetaValue<T>(key: string): Promise<T | null> {
+  const database = getDb();
+  if (!database) return null;
+  try {
+    const record = await database.meta.get(key);
+    return record ? (record.value as T) : null;
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to read meta key ${key}:`, error);
+    return null;
+  }
+}
+
+export async function setMetaValue<T>(key: string, value: T): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.meta.put({ key, value });
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to write meta key ${key}:`, error);
+  }
+}
+
+export async function deleteMetaValue(key: string): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.meta.delete(key);
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to delete meta key ${key}:`, error);
+  }
+}
+
+/**
+ * Clears all stored keys and passphrase credentials (keeps projects intact).
+ */
+export async function clearAllKeys(): Promise<boolean> {
+  const database = getDb();
+  if (!database) return false;
+  try {
+    await database.providers.clear();
+    await database.meta.delete('default_crypto_key');
+    await database.meta.delete('passphrase_salt');
+    await database.meta.delete('passphrase_check');
+    await database.meta.delete('security_mode');
+    return true;
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to clear keys:', error);
+    return false;
+  }
+}
+
+/**
+ * Clears all data (projects, providers, and meta) from IndexedDB.
+ */
+export async function clearAllDatabaseData(): Promise<boolean> {
+  const database = getDb();
+  if (!database) return false;
+  try {
+    await database.projects.clear();
+    await database.providers.clear();
+    await database.meta.clear();
+    return true;
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to clear all database data:', error);
     return false;
   }
 }

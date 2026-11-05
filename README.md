@@ -28,11 +28,22 @@ DESYRA is a premium, precise, dark-themed AI application builder interface.
   - `success`: `#22C55E`, `warning`: `#F5B73B`, `error`: `#EF4444`, `info`: `#60A5FA`
 - **Radii**: 8px (`sm`), 12px (`md`), 20px (`lg`), 9999px (`pill`).
 
-## Pages Implemented in Push 1
-- `/`: Home hero with headline, auto-growing chat box (min 3 to ~10 rows), 6 starter prompt chips, round orange send button, character counter, and real recent projects list from IndexedDB.
+## Pages Implemented in Push 1 & 2
+- `/`: Home hero with headline, auto-growing chat box (min 3 to ~10 rows), 6 starter prompt chips, round orange send button, character counter, recent projects list from IndexedDB, and BYOK gating modal preserving drafts when no key is configured.
 - `/projects`: Grid of saved projects from Dexie IndexedDB with open and delete actions (with accessible confirmation modal and toast notifications).
-- `/settings`: AI Keys (BYOK) status card ("Key management arrives in Push 2") with "Coming next" badge.
+- `/settings`: Full Bring-Your-Own-Key management (Google Gemini, Groq, OpenRouter, OpenAI, Anthropic, and custom endpoints) with AES-GCM encryption, passphrase protection controls, and danger zone data wipe options.
 - `/project/[id]`: Project specification viewer with saved prompt and the "IDE arrives in Push 4" status card.
+
+## Key Storage and Security
+
+DESYRA operates as a client-side BYOK (Bring Your Own Key) architecture:
+1. **Zero Central Servers**: Your keys are encrypted and stored solely inside your browser's IndexedDB storage. DESYRA runs no telemetry or backend relay server that receives your keys.
+2. **Web Crypto AES-GCM (256-bit)**:
+   - **Default Mode**: A non-extractable 256-bit AES-GCM `CryptoKey` is generated via the Web Crypto API and held in the browser's database. Keys are encrypted with a random 12-byte initialization vector (IV) per entry.
+   - **Passphrase Mode**: Keys are encrypted using a key derived on the fly via PBKDF2 (SHA-256, 600,000 iterations, 16-byte random salt). The derived key resides strictly in memory for the active session. If you close or reload the browser, an Unlock modal requires your passphrase.
+3. **Honest Security Limits**:
+   - AES-GCM encryption at rest protects your keys against casual inspection or offline extraction of browser storage files.
+   - It **cannot** protect against a physically compromised device, malicious third-party browser extensions with DOM access, or active host malware/keyloggers.
 
 ## How to Run
 
@@ -54,3 +65,4 @@ DESYRA is a premium, precise, dark-themed AI application builder interface.
    npm run build
    npm start
    ```
+
