@@ -1,0 +1,40 @@
+/* DESYRA Design Tokens
+   Strict adherence to Section 3:
+   ~90% black/gray surfaces. Orange is ONLY for primary buttons, active tab/nav state, focus rings, small highlights.
+   Never fill whole cards or backgrounds with orange.
+*/
+
+:root {
+  /* Surfaces & Canvas */
+  --bg: #09090b;
+  --surface: #111114;
+  --elevated: #18181c;
+  --border: #26262c;
+
+  /* Typography */
+  --text: #f4f4f5;
+  --muted: #a1a1aa;
+  --disabled: #5b5b63;
+
+  /* Accent (Orange) */
+  --accent: #ff6b1a;
+  --accent-hover: #ff8240;
+  --accent-pressed: #e85a0c;
+  --accent-soft: rgba(255, 107, 26, 0.12);
+
+  /* Status */
+  --success: #22c55e;
+  --warning: #f5b73b;
+  --error: #ef4444;
+  --info: #60a5fa;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-pill: 9999px;
+
+  /* Glows */
+  --glow-accent: 0 0 16px -2px rgba(255, 107, 26, 0.35);
+  --glow-input: 0 0 0 1px #ff6b1a, 0 0 14px -2px rgba(255, 107, 26, 0.25);
+}

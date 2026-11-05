@@ -1,0 +1,6 @@
+{
+  "name": "DESYRA - Premium AI App Builder",
+  "description": "Premium dark-themed AI app builder interface. Describe your idea and manage projects with local Dexie persistence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
