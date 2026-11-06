@@ -138,26 +138,26 @@ export function TopBar({
   return (
     <header className="h-12 w-full bg-[var(--surface)] border-b border-[var(--border)] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-30 select-none">
       {/* Left: Back Link & Editable Title */}
-      <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-        <Link href="/projects" tabIndex={-1}>
+      <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 flex-1 overflow-hidden">
+        <Link href="/projects" tabIndex={-1} className="shrink-0 flex items-center justify-center min-w-[36px] min-h-[36px] sm:min-w-[40px] sm:min-h-[40px]">
           <Tooltip content="All Projects" position="bottom">
             <IconButton
               size="sm"
               variant="ghost"
               aria-label="Back to all projects"
-              className="text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--elevated)]"
+              className="text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--elevated)] min-w-[36px] min-h-[36px]"
             >
               <ArrowLeft className="w-4 h-4" />
             </IconButton>
           </Tooltip>
         </Link>
 
-        <span className="text-[var(--border)] hidden sm:inline" aria-hidden="true">
+        <span className="text-[var(--border)] hidden sm:inline shrink-0" aria-hidden="true">
           /
         </span>
 
-        {/* Project Title (Inline edit) */}
-        <div className="min-w-0 max-w-[220px] sm:max-w-md">
+        {/* Project Title (Inline edit, flex-1 min-w-0 with ellipsis) */}
+        <div className="flex-1 min-w-0 overflow-hidden pr-2">
           {isEditingTitle ? (
             <input
               ref={titleInputRef}
@@ -167,7 +167,7 @@ export function TopBar({
               onBlur={handleSaveTitle}
               onKeyDown={handleTitleKeyDown}
               maxLength={60}
-              className="w-full bg-[var(--elevated)] text-[var(--text)] text-xs sm:text-sm font-semibold px-2 py-0.5 rounded-[var(--radius-sm)] border border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+              className="w-full bg-[var(--elevated)] text-[var(--text)] text-xs sm:text-sm font-semibold px-2 py-1 rounded-[var(--radius-sm)] border border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] truncate"
               aria-label="Rename project"
             />
           ) : (
@@ -178,7 +178,7 @@ export function TopBar({
                   setTitleDraft(projectTitle);
                   setIsEditingTitle(true);
                 }}
-                className="text-xs sm:text-sm font-semibold text-[var(--text)] hover:text-[var(--accent)] hover:bg-[var(--elevated)] px-2 py-1 -mx-2 rounded-[var(--radius-sm)] transition-colors truncate block text-left max-w-full cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                className="text-xs sm:text-sm font-semibold text-[var(--text)] hover:text-[var(--accent)] hover:bg-[var(--elevated)] px-2 py-1 -mx-2 rounded-[var(--radius-sm)] transition-colors truncate block text-left w-full cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
               >
                 {projectTitle}
               </button>
@@ -195,21 +195,21 @@ export function TopBar({
             onClick={() => setIsPopoverOpen((prev) => !prev)}
             aria-expanded={isPopoverOpen}
             aria-haspopup="true"
-            className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-1 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer max-w-[160px] sm:max-w-[240px] shrink-0 min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
           >
             <span
               className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                 activeProvider ? 'bg-[var(--accent)]' : 'bg-[var(--disabled)]'
               }`}
             />
-            <span className="font-medium text-[var(--text)] truncate max-w-[90px] sm:max-w-[120px]">
+            <span className="font-medium text-[var(--text)] truncate">
               {activeProvider?.label || 'No provider'}
             </span>
-            <span className="text-[var(--disabled)] hidden sm:inline">/</span>
-            <span className="font-mono text-[var(--accent)] truncate max-w-[90px] sm:max-w-[130px] hidden sm:inline">
+            <span className="text-[var(--disabled)] hidden sm:inline shrink-0">/</span>
+            <span className="font-mono text-[var(--accent)] truncate hidden sm:inline">
               {activeModel || 'Select model'}
             </span>
-            <ChevronDown className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />
+            <ChevronDown className="w-3.5 h-3.5 text-[var(--muted)] shrink-0 ml-auto" />
           </button>
 
           {/* Quick Model Switcher Popover */}

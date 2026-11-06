@@ -8,8 +8,6 @@ import {
   RefreshCw,
   KeyRound,
   AlertTriangle,
-  Bot,
-  User,
   ArrowDown,
   Lock,
   Play,
@@ -21,7 +19,6 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/components/ui/toast';
 import { UnlockModal } from '@/components/settings/unlock-modal';
 import {
-  listProviders,
   isSessionLocked,
   type SafeProviderInfo,
 } from '@/lib/keys';
@@ -34,6 +31,7 @@ import {
 } from '@/lib/db';
 import { streamChat, type ChatMessage, type ProviderError } from '@/lib/ai';
 import { formatRelativeTime } from '@/lib/utils';
+import { MarkdownRenderer } from '@/components/chat/markdown-renderer';
 
 const SYSTEM_PROMPT = "You are DESYRA's assistant. Answer helpfully and concisely.";
 const MAX_CONTEXT_MESSAGES = 20;
@@ -44,6 +42,52 @@ export interface ChatPaneProps {
   activeModel: string | null;
   onRefreshProviders?: () => void;
 }
+
+interface MessageItemProps {
+  message: StoredMessage;
+}
+
+const MessageItem = React.memo(function MessageItem({ message }: MessageItemProps) {
+  const isUser = message.role === 'user';
+
+  if (isUser) {
+    return (
+      <div className="flex justify-end w-full group">
+        <div className="max-w-[85%] flex flex-col items-end">
+          <div className="bg-[var(--elevated)] border border-[#303038] text-[var(--text)] rounded-[16px] rounded-br-[4px] px-3.5 py-2.5 text-[15px] sm:text-[14.5px] leading-[1.6] whitespace-pre-wrap [overflow-wrap:anywhere] select-text shadow-xs">
+            {message.content}
+          </div>
+          <span className="text-[10px] text-[var(--disabled)] mt-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity text-right select-none">
+            {formatRelativeTime(message.createdAt)}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full flex flex-col text-left group">
+      {/* Tiny DESYRA brand label above assistant message */}
+      <div className="flex items-center gap-1.5 mb-1 select-none">
+        <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
+        {message.model && (
+          <span className="text-[10px] text-[var(--disabled)] font-mono">
+            · {message.model}
+          </span>
+        )}
+      </div>
+
+      {/* Render Markdown without big card container */}
+      <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
+        <MarkdownRenderer content={message.content} />
+      </div>
+
+      <span className="text-[10px] text-[var(--disabled)] mt-1.5 px-0.5 opacity-0 group-hover:opacity-100 transition-opacity select-none">
+        {formatRelativeTime(message.createdAt)}
+      </span>
+    </div>
+  );
+});
 
 export function ChatPane({
   project,
@@ -121,12 +165,14 @@ export function ChatPane({
     }
   }, [messages, streamingText, scrollToBottom]);
 
-  // Adjust textarea height up to 8 rows (~192px)
+  // Adjust textarea height: min 44px (1 row), up to ~6 rows on mobile (~144px) / ~8 rows on desktop (~192px)
   const adjustTextareaHeight = () => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    const newHeight = Math.min(el.scrollHeight, 192);
+    const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 640;
+    const maxHeight = isMobileViewport ? 144 : 192;
+    const newHeight = Math.min(el.scrollHeight, maxHeight);
     el.style.height = `${Math.max(newHeight, 44)}px`;
   };
 
@@ -349,7 +395,7 @@ export function ChatPane({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto p-4 space-y-4 text-xs sm:text-sm leading-relaxed"
+        className="flex-1 overflow-x-hidden overflow-y-auto px-3.5 sm:px-4 py-4 space-y-4 sm:space-y-5 text-left"
       >
         {/* If no valid config & no messages, show EmptyState explaining what is missing + the saved idea */}
         {messages.length === 0 && !hasValidConfig && (
@@ -441,61 +487,24 @@ export function ChatPane({
           </div>
         )}
 
-        {/* Render Messages */}
-        {messages.map((m) => {
-          const isUser = m.role === 'user';
-          return (
-            <div
-              key={m.id}
-              className={`group flex gap-2.5 items-start ${
-                isUser ? 'justify-end' : 'justify-start'
-              }`}
-            >
-              {!isUser && (
-                <div className="w-7 h-7 rounded-full bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center text-[var(--accent)] shrink-0 mt-0.5">
-                  <Bot className="w-3.5 h-3.5" />
-                </div>
-              )}
-
-              <div className="max-w-[85%] flex flex-col">
-                <div
-                  className={`p-3.5 rounded-[var(--radius-md)] text-xs sm:text-sm whitespace-pre-wrap break-words leading-relaxed ${
-                    isUser
-                      ? 'bg-[var(--elevated)] border border-[#303038] text-[var(--text)]'
-                      : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text)]'
-                  }`}
-                >
-                  {m.content}
-                </div>
-
-                {/* Timestamp & info visible on hover or mobile tap */}
-                <span
-                  className={`text-[10px] text-[var(--disabled)] mt-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity ${
-                    isUser ? 'text-right' : 'text-left'
-                  }`}
-                >
-                  {formatRelativeTime(m.createdAt)}
-                  {m.model ? ` · ${m.model}` : ''}
-                </span>
-              </div>
-
-              {isUser && (
-                <div className="w-7 h-7 rounded-full bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center text-[var(--muted)] shrink-0 mt-0.5">
-                  <User className="w-3.5 h-3.5" />
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {/* Render Memoized Messages */}
+        {messages.map((m) => (
+          <MessageItem key={m.id} message={m} />
+        ))}
 
         {/* Streaming Chunk */}
         {isStreaming && (
-          <div className="flex gap-2.5 items-start justify-start animate-in fade-in duration-100">
-            <div className="w-7 h-7 rounded-full bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center text-[var(--accent)] shrink-0 mt-0.5">
-              <Bot className="w-3.5 h-3.5" />
+          <div className="w-full flex flex-col text-left animate-in fade-in duration-100">
+            <div className="flex items-center gap-1.5 mb-1 select-none">
+              <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
             </div>
-            <div className="max-w-[85%] p-3.5 rounded-[var(--radius-md)] text-xs sm:text-sm bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] whitespace-pre-wrap break-words leading-relaxed">
-              {streamingText || <span className="text-[var(--disabled)] italic">Thinking...</span>}
+            <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
+              {streamingText ? (
+                <MarkdownRenderer content={streamingText} isStreaming={true} />
+              ) : (
+                <span className="text-[var(--disabled)] italic text-sm">Thinking...</span>
+              )}
               <span className="inline-block w-1.5 h-3.5 ml-1 bg-[var(--accent)] animate-pulse align-middle" />
             </div>
           </div>
@@ -539,58 +548,55 @@ export function ChatPane({
       )}
 
       {/* Composer Section */}
-      <div className="p-3 bg-[var(--surface)] border-t border-[var(--border)] shrink-0">
+      <div className="p-2.5 sm:p-3 bg-[var(--surface)] border-t border-[var(--border)] shrink-0 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
         <form
           onSubmit={(e) => {
             e.preventDefault();
             executeSend(inputText);
           }}
-          className="relative flex items-end gap-2"
+          className="flex flex-col gap-1"
         >
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={inputText}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            disabled={isStreaming || !hasValidConfig}
-            placeholder={
-              !hasValidConfig
-                ? isLocked
-                  ? 'Unlock storage to chat'
-                  : 'Configure an active model in Settings'
-                : isStreaming
-                ? 'DESYRA is generating...'
-                : 'Message DESYRA... (Enter to send, Shift+Enter for new line)'
-            }
-            className="flex-1 min-h-[44px] max-h-[192px] w-full bg-[var(--elevated)] text-[var(--text)] text-xs sm:text-sm rounded-[var(--radius-md)] border border-[var(--border)] p-2.5 resize-none leading-relaxed placeholder:text-[var(--disabled)] focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)] disabled:opacity-50"
-          />
+          <div className="relative flex items-end gap-2">
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={inputText}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              disabled={isStreaming || !hasValidConfig}
+              placeholder="Message DESYRA..."
+              className="flex-1 min-h-[44px] max-h-[144px] sm:max-h-[192px] w-full bg-[var(--elevated)] text-[var(--text)] text-[16px] sm:text-[14px] leading-[1.5] rounded-[12px] border border-[var(--border)] px-3.5 py-2.5 resize-none placeholder:text-[var(--disabled)] focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)] disabled:opacity-50 overflow-y-auto [scrollbar-width:thin]"
+            />
 
-          {isStreaming ? (
-            <Button
-              type="button"
-              variant="secondary"
-              size="md"
-              onClick={handleStop}
-              aria-label="Stop generation"
-              leftIcon={<Square className="w-3.5 h-3.5 fill-current" />}
-              className="shrink-0 h-[44px] px-3.5"
-            >
-              Stop
-            </Button>
-          ) : (
-            <Button
-              type="submit"
-              variant="primary"
-              size="md"
-              disabled={!inputText.trim() || !hasValidConfig}
-              aria-label="Send message"
-              leftIcon={<Send className="w-3.5 h-3.5" />}
-              className="shrink-0 h-[44px] px-3.5"
-            >
-              Send
-            </Button>
-          )}
+            {isStreaming ? (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleStop}
+                aria-label="Stop generation"
+                className="w-11 h-11 sm:h-10 sm:w-auto sm:px-3 sm:py-2 shrink-0 rounded-[12px] flex items-center justify-center p-0"
+              >
+                <Square className="w-4 h-4 fill-current shrink-0" />
+                <span className="hidden sm:inline ml-1.5 text-xs font-medium">Stop</span>
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={!inputText.trim() || !hasValidConfig}
+                aria-label="Send message"
+                className="w-11 h-11 sm:h-10 sm:w-auto sm:px-3.5 sm:py-2 shrink-0 rounded-[12px] flex items-center justify-center p-0"
+              >
+                <Send className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline ml-1.5 text-xs font-medium">Send</span>
+              </Button>
+            )}
+          </div>
+
+          {/* Desktop-only helper text */}
+          <p className="hidden sm:block text-[11px] text-[var(--disabled)] select-none px-1">
+            Enter to send, Shift+Enter for a new line
+          </p>
         </form>
       </div>
 
