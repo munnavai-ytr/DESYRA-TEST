@@ -1,4 +1,4 @@
-# DESYRA — Premium AI App Builder (Push 1 of 10)
+# DESYRA — Premium AI App Builder (Push 4 of 10)
 
 DESYRA is a premium, precise, dark-themed AI application builder interface.
 
@@ -28,11 +28,47 @@ DESYRA is a premium, precise, dark-themed AI application builder interface.
   - `success`: `#22C55E`, `warning`: `#F5B73B`, `error`: `#EF4444`, `info`: `#60A5FA`
 - **Radii**: 8px (`sm`), 12px (`md`), 20px (`lg`), 9999px (`pill`).
 
-## Pages Implemented in Pushes 1, 2 & 3
+## Pages Implemented in Pushes 1 to 4
 - `/`: Home hero with headline, auto-growing chat box (min 3 to ~10 rows), 6 starter prompt chips, round orange send button, character counter, recent projects list from IndexedDB, and BYOK gating modal preserving drafts when no key is configured.
-- `/projects`: Grid of saved projects from Dexie IndexedDB with open and delete actions (with accessible confirmation modal and toast notifications).
+- `/projects`: Grid of saved projects from Dexie IndexedDB with open, rename, and delete actions (with accessible confirmation modal and toast notifications).
 - `/settings`: Full Bring-Your-Own-Key management (Google Gemini, Groq, OpenRouter, OpenAI, Anthropic, and custom endpoints) with AES-GCM encryption, passphrase protection controls, danger zone data wipe options, live "Test key" verification, and searchable Model Pickers.
-- `/project/[id]`: Project specification viewer with saved prompt, the "IDE arrives in Push 4" roadmap card, and the new **Developer Preview Chat Panel** featuring live token-by-token streaming, AbortController stop/retry, auto-scrolling, provider switcher, and IndexedDB message persistence.
+- `/project/[id]`: Full-viewport (`100dvh`) IDE workspace with slim TopBar, chat pane, hierarchical file explorer, code editor, and responsive preview frame.
+
+## The IDE Page (`/project/[id]`)
+
+Push 4 establishes the core workspace layout:
+1. **Slim TopBar (~48px)**:
+   - Direct back navigation to `/projects`.
+   - Inline project renaming with `1-60` character validation (Enter saves, Esc cancels, updates `updatedAt` in IndexedDB).
+   - Live Active Provider & Model chip: clicking opens a quick popover to hot-swap among saved providers and models.
+   - Settings shortcut icon.
+2. **Desktop & Tablet Layouts**:
+   - **Split Workspace**: Left chat pane and right IDE workspace separated by a draggable vertical divider (default 35% / 65% on desktop, 40% / 60% on tablet).
+   - **Keyboard & Preference Persistence**: Focus the divider and adjust width using `ArrowLeft` / `ArrowRight` (Home key resets); ratio is saved in `localStorage`.
+   - **Workspace Tabs**: "Preview" and "Code" with active orange underline.
+   - **File Tree**: Collapsible panel on desktop (toggle with button or `Ctrl+B` / `Cmd+B`) and overlay drawer on tablet.
+3. **Mobile Layout (< 768px)**:
+   - Fixed bottom tab bar (4 tabs: Chat, Preview, Files, Code) with minimum 48px touch targets and safe-area padding.
+   - State preservation: all 4 panes remain mounted in the DOM to preserve textarea drafts, scroll offsets, and editor state.
+   - Selecting any file in the Files tab automatically transitions to the Code editor.
+4. **Chat Pane**:
+   - Continuous first-open flow: if a project has zero messages and an active key/model is unlocked, it flags `autoStarted = true` and automatically submits the app idea as the initial message.
+   - Gated fallback: if no key or storage is locked, it presents an explanatory card with a direct "Start with my idea" button once configured.
+   - Message bubble styling: surface cards for assistant, elevated cards for user (no solid orange fills), relative timestamps on hover, autoscroll with scroll-up detection, and floating "Jump to latest" button.
+   - Auto-growing composer up to 8 rows, `Enter` to send, `Shift+Enter` for new lines, streaming stop button, and retry on error.
+5. **IndexedDB File Tree (`src/lib/files.ts`)**:
+   - IndexedDB `files` table (schema v4) with compound index `[projectId+path]`.
+   - Relative POSIX paths with strict validation (no leading slash, no `..`, no backslashes, max 200 chars, max 500 files, max 1 MB per file).
+   - Recursive tree visualization with folder expand/collapse state, file-type icons, row action buttons (Rename, Delete), and Delete Folder confirmation detailing affected file count.
+6. **Code Editor**:
+   - Monospace editor using JetBrains Mono with line-number gutter.
+   - Autosave with 600ms debounce to IndexedDB, saving on blur, unmount, and `beforeunload`.
+   - Tab key inserts 2 spaces, spellcheck disabled, horizontal scrolling for long lines.
+   - File size monitoring with warning banner for files exceeding 200 KB.
+7. **Preview Pane**:
+   - Frame toolbar with responsive device toggles: Phone (`390px`), Tablet (`768px`), and Desktop (`100%`).
+   - Frame container resizes smoothly with subtle border simulation.
+   - Clearly labeled empty state: "Live preview arrives in Push 6."
 
 ## Providers and Known Limitations
 

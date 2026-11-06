@@ -10,7 +10,8 @@ import { hasAnyKey } from '@/lib/keys';
 
 export function Header() {
   const pathname = usePathname();
-  const isProjectsActive = pathname === '/projects' || pathname.startsWith('/project/');
+  const isProjectIde = pathname.startsWith('/project/');
+  const isProjectsActive = pathname === '/projects';
   const isSettingsActive = pathname === '/settings';
   const [hasKeys, setHasKeys] = useState<boolean>(true); // default true to avoid layout flicker before check
 
@@ -34,6 +35,10 @@ export function Header() {
       window.removeEventListener('focus', checkKeys);
     };
   }, [pathname]);
+
+  if (isProjectIde) {
+    return null;
+  }
 
   return (
     <header className="sticky top-0 z-40 w-full bg-[var(--bg)]/95 backdrop-blur-md border-b border-[var(--border)] transition-colors">

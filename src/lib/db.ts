@@ -9,6 +9,16 @@ export interface Project {
   idea: string;
   createdAt: number;
   updatedAt: number;
+  autoStarted?: boolean;
+}
+
+export interface ProjectFile {
+  id: string;
+  projectId: string;
+  path: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface StoredProvider {
@@ -55,6 +65,7 @@ export class DesyraDatabase extends Dexie {
   meta!: Table<MetaItem, string>;
   modelCache!: Table<StoredModelCache, string>;
   messages!: Table<StoredMessage, string>;
+  files!: Table<ProjectFile, string>;
 
   constructor() {
     super('desyra_db');
@@ -72,6 +83,14 @@ export class DesyraDatabase extends Dexie {
       meta: 'key',
       modelCache: 'providerId, fetchedAt',
       messages: 'id, projectId, createdAt, role',
+    });
+    this.version(4).stores({
+      projects: 'id, title, createdAt, updatedAt, autoStarted',
+      providers: 'id, providerType, label, isDefault, createdAt, updatedAt, defaultModel, lastTestStatus',
+      meta: 'key',
+      modelCache: 'providerId, fetchedAt',
+      messages: 'id, projectId, createdAt, role',
+      files: 'id, projectId, path, [projectId+path], createdAt, updatedAt',
     });
   }
 }
@@ -201,6 +220,30 @@ export async function getProject(id: string): Promise<Project | null> {
 }
 
 /**
+ * Updates a project record in IndexedDB (title, autoStarted, updatedAt).
+ */
+export async function updateProject(id: string, updates: Partial<Project>): Promise<boolean> {
+  const database = getDb();
+  if (!database || !id) return false;
+
+  try {
+    await database.projects.update(id, {
+      ...updates,
+      updatedAt: Date.now(),
+    });
+    return true;
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to update project ${id}:`, error);
+    notify({
+      type: 'error',
+      title: 'Storage Error',
+      message: `Failed to update project with ID ${id}.`,
+    });
+    return false;
+  }
+}
+
+/**
  * Deletes a project by ID.
  */
 export async function deleteProject(id: string): Promise<boolean> {
@@ -276,7 +319,7 @@ export async function clearAllKeys(): Promise<boolean> {
 }
 
 /**
- * Clears all data (projects, providers, meta, modelCache, and messages) from IndexedDB.
+ * Clears all data (projects, providers, meta, modelCache, messages, files) from IndexedDB.
  */
 export async function clearAllDatabaseData(): Promise<boolean> {
   const database = getDb();
@@ -287,6 +330,7 @@ export async function clearAllDatabaseData(): Promise<boolean> {
     await database.meta.clear();
     await database.modelCache.clear();
     await database.messages.clear();
+    await database.files.clear();
     return true;
   } catch (error) {
     console.error('[DESYRA DB] Failed to clear all database data:', error);
