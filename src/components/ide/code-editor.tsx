@@ -14,27 +14,24 @@ export interface CodeEditorProps {
 
 type SaveStatus = 'saved' | 'saving' | 'error';
 
-export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) {
-  const [content, setContent] = useState<string>('');
+interface ActiveCodeEditorProps {
+  projectId: string;
+  file: ProjectFile;
+  onFileUpdated?: (updatedFile: ProjectFile) => void;
+}
+
+function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorProps) {
+  const [content, setContent] = useState<string>(file.content);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
-  const [lastSavedContent, setLastSavedContent] = useState<string>('');
+  const [lastSavedContent, setLastSavedContent] = useState<string>(file.content);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const pendingContentRef = useRef<string>('');
-  const currentFileRef = useRef<ProjectFile | null>(null);
-
-  const [prevFileId, setPrevFileId] = useState<string | null>(file?.id ?? null);
-  if (file?.id !== prevFileId) {
-    setPrevFileId(file?.id ?? null);
-    setContent(file ? file.content : '');
-    setLastSavedContent(file ? file.content : '');
-    setSaveStatus('saved');
-  }
+  const pendingContentRef = useRef<string>(file.content);
+  const currentFileRef = useRef<ProjectFile>(file);
 
   useEffect(() => {
-    pendingContentRef.current = file ? file.content : '';
     currentFileRef.current = file;
   }, [file]);
 
@@ -64,8 +61,6 @@ export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) 
     setContent(newVal);
     pendingContentRef.current = newVal;
 
-    if (!file) return;
-
     if (newVal === lastSavedContent) {
       setSaveStatus('saved');
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
@@ -79,7 +74,7 @@ export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) 
     }
 
     debounceTimerRef.current = setTimeout(() => {
-      saveContent(newVal, file);
+      saveContent(newVal, currentFileRef.current);
     }, 600);
   };
 
@@ -88,15 +83,15 @@ export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) 
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
-    if (file && pendingContentRef.current !== lastSavedContent) {
-      saveContent(pendingContentRef.current, file);
+    if (pendingContentRef.current !== lastSavedContent) {
+      saveContent(pendingContentRef.current, currentFileRef.current);
     }
   };
 
   // Flush on unmount or beforeunload
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (currentFileRef.current && pendingContentRef.current !== lastSavedContent) {
+      if (pendingContentRef.current !== lastSavedContent) {
         updateFileContent(
           projectId,
           currentFileRef.current.path,
@@ -112,7 +107,7 @@ export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) 
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
-      if (currentFileRef.current && pendingContentRef.current !== lastSavedContent) {
+      if (pendingContentRef.current !== lastSavedContent) {
         updateFileContent(
           projectId,
           currentFileRef.current.path,
@@ -163,18 +158,6 @@ export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) 
   const isLargeFile = useMemo(() => {
     return new Blob([content]).size > WARN_FILE_SIZE_BYTES;
   }, [content]);
-
-  if (!file) {
-    return (
-      <div className="flex-1 h-full flex items-center justify-center p-6 bg-[var(--bg)] text-center">
-        <EmptyState
-          icon={<FileCode className="w-8 h-8 text-[var(--disabled)]" />}
-          title="No file selected"
-          description="Select a file from the explorer on the left to view and edit its contents."
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col h-full bg-[var(--bg)] overflow-hidden">
@@ -252,5 +235,28 @@ export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) 
         />
       </div>
     </div>
+  );
+}
+
+export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) {
+  if (!file) {
+    return (
+      <div className="flex-1 h-full flex items-center justify-center p-6 bg-[var(--bg)] text-center">
+        <EmptyState
+          icon={<FileCode className="w-8 h-8 text-[var(--disabled)]" />}
+          title="No file selected"
+          description="Select a file from the explorer on the left to view and edit its contents."
+        />
+      </div>
+    );
+  }
+
+  return (
+    <ActiveCodeEditor
+      key={file.id}
+      projectId={projectId}
+      file={file}
+      onFileUpdated={onFileUpdated}
+    />
   );
 }

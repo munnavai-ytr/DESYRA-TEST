@@ -43,13 +43,7 @@ export function TopBar({
   const [allProviders, setAllProviders] = useState<SafeProviderInfo[]>([]);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  const [prevTitle, setPrevTitle] = useState(projectTitle);
-  if (prevTitle !== projectTitle) {
-    setPrevTitle(projectTitle);
-    if (!isEditingTitle) {
-      setTitleDraft(projectTitle);
-    }
-  }
+
 
   useEffect(() => {
     if (isEditingTitle) {
@@ -180,7 +174,10 @@ export function TopBar({
             <Tooltip content="Click to rename project" position="bottom">
               <button
                 type="button"
-                onClick={() => setIsEditingTitle(true)}
+                onClick={() => {
+                  setTitleDraft(projectTitle);
+                  setIsEditingTitle(true);
+                }}
                 className="text-xs sm:text-sm font-semibold text-[var(--text)] hover:text-[var(--accent)] hover:bg-[var(--elevated)] px-2 py-1 -mx-2 rounded-[var(--radius-sm)] transition-colors truncate block text-left max-w-full cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
               >
                 {projectTitle}

@@ -61,7 +61,7 @@ export function ChatPane({
   const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
   const [lastError, setLastError] = useState<ProviderError | null>(null);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
-  const [hasCheckedAutoStart, setHasCheckedAutoStart] = useState(false);
+  const hasCheckedAutoStartRef = useRef(false);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -301,20 +301,18 @@ export function ChatPane({
 
   // First-open behavior check
   useEffect(() => {
-    if (hasCheckedAutoStart) return;
+    if (hasCheckedAutoStartRef.current) return;
+    if (!activeProvider || !activeModel) return;
 
     // Check if ready for auto-start
     const checkAutoStart = async () => {
+      hasCheckedAutoStartRef.current = true;
       const msgs = await listProjectMessages(project.id);
       const locked = await isSessionLocked();
-
-      setHasCheckedAutoStart(true);
 
       if (
         msgs.length === 0 &&
         !project.autoStarted &&
-        activeProvider &&
-        activeModel &&
         !locked &&
         project.idea.trim()
       ) {
@@ -325,10 +323,8 @@ export function ChatPane({
       }
     };
 
-    if (activeProvider !== undefined) {
-      checkAutoStart();
-    }
-  }, [hasCheckedAutoStart, project, activeProvider, activeModel]);
+    checkAutoStart();
+  }, [project.id, project.autoStarted, project.idea, activeProvider, activeModel]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
