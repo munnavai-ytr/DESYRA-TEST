@@ -12,6 +12,8 @@ import {
   Trash2,
   Key,
   Globe,
+  Sparkles,
+  Clock,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -25,7 +27,10 @@ import {
   deleteKey,
   setDefault,
 } from '@/lib/keys';
+import { testKey } from '@/lib/ai';
 import { useToast } from '@/components/ui/toast';
+import { formatRelativeTime } from '@/lib/utils';
+import { ModelPicker } from './model-picker';
 
 export interface CustomProviderCardProps {
   customProviders: SafeProviderInfo[];
@@ -54,6 +59,9 @@ export function CustomProviderSection({
   const [isEditSaving, setIsEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
+  // Testing state map
+  const [testingMap, setTestingMap] = useState<Record<string, boolean>>({});
+
   // Deletion modal state
   const [deletingProvider, setDeletingProvider] = useState<SafeProviderInfo | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -65,6 +73,52 @@ export function CustomProviderSection({
     setShowKey(false);
     setErrors({});
     setIsAddOpen(false);
+  };
+
+  const handleTestCustomKey = async (cp: SafeProviderInfo) => {
+    setTestingMap((prev) => ({ ...prev, [cp.id]: true }));
+    try {
+      const res = await testKey(cp);
+      if (res.valid) {
+        toast({
+          type: 'success',
+          title: 'Key Verified',
+          message: `"${cp.label}" endpoint verified. Model list loaded.`,
+        });
+      } else if (res.status === 'rate_limited') {
+        toast({
+          type: 'warning',
+          title: 'Rate Limit',
+          message: res.error || 'Rate limit reached on custom endpoint.',
+        });
+      } else if (res.status === 'invalid') {
+        toast({
+          type: 'error',
+          title: 'Key Rejected',
+          message: res.error || 'Key was rejected by custom endpoint.',
+        });
+      } else {
+        toast({
+          type: 'info',
+          title: "Couldn't Verify",
+          message: res.error || 'Could not connect to endpoint.',
+        });
+      }
+      onRefresh();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Test failed';
+      if (msg.includes('locked')) {
+        onRequireUnlock?.();
+      } else {
+        toast({
+          type: 'error',
+          title: 'Error',
+          message: msg,
+        });
+      }
+    } finally {
+      setTestingMap((prev) => ({ ...prev, [cp.id]: false }));
+    }
   };
 
   const handleAddSubmit = async (e: React.FormEvent) => {
@@ -198,6 +252,43 @@ export function CustomProviderSection({
     } catch (err) {
       console.error('Failed to set default provider:', err);
     }
+  };
+
+  const renderStatusBadge = (cp: SafeProviderInfo) => {
+    if (cp.lastTestStatus === 'valid') {
+      return (
+        <Badge variant="success" size="sm">
+          Valid
+        </Badge>
+      );
+    }
+    if (cp.lastTestStatus === 'invalid') {
+      return (
+        <Badge variant="error" size="sm">
+          Invalid
+        </Badge>
+      );
+    }
+    if (cp.lastTestStatus === 'rate_limited') {
+      return (
+        <Badge variant="warning" size="sm">
+          Rate-limited
+        </Badge>
+      );
+    }
+    if (cp.lastTestStatus === 'unverified') {
+      return (
+        <Badge variant="default" size="sm">
+          Couldn&apos;t verify
+        </Badge>
+      );
+    }
+
+    return (
+      <Badge variant="success" size="sm">
+        Saved
+      </Badge>
+    );
   };
 
   return (
@@ -342,6 +433,7 @@ export function CustomProviderSection({
       {/* Render all saved custom providers */}
       {customProviders.map((cp) => {
         const isEditing = editingId === cp.id;
+        const isTesting = Boolean(testingMap[cp.id]);
 
         return (
           <Card key={cp.id} className="p-5 transition-all">
@@ -361,9 +453,7 @@ export function CustomProviderSection({
                     Default
                   </Badge>
                 )}
-                <Badge variant="success" size="sm">
-                  Saved
-                </Badge>
+                {renderStatusBadge(cp)}
               </div>
             </div>
 
@@ -373,16 +463,20 @@ export function CustomProviderSection({
             </div>
 
             {!isEditing ? (
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-[var(--radius-md)] bg-[var(--elevated)] border border-[var(--border)] mb-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-[var(--radius-md)] bg-[var(--elevated)] border border-[var(--border)] mb-3 text-xs">
                 <div className="flex items-center gap-2">
                   <Key className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />
                   <span className="font-mono text-xs text-[var(--text)] tracking-wider">
                     ••••••••{cp.last4}
                   </span>
                 </div>
-                <span className="text-[11px] text-[var(--disabled)]">
-                  Key testing arrives in Push 3.
-                </span>
+
+                {cp.lastTestedAt && (
+                  <span className="text-[11px] text-[var(--disabled)] flex items-center gap-1 tabular-nums">
+                    <Clock className="w-3 h-3" />
+                    <span>Tested {formatRelativeTime(cp.lastTestedAt)}</span>
+                  </span>
+                )}
               </div>
             ) : (
               <form
@@ -454,9 +548,36 @@ export function CustomProviderSection({
               </form>
             )}
 
+            {cp.lastTestError && cp.lastTestStatus !== 'valid' && (
+              <p className="text-xs text-[var(--error)] mb-3 p-2 rounded-[var(--radius-sm)] bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.2)] flex items-start gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>{cp.lastTestError}</span>
+              </p>
+            )}
+
+            {/* Embedded Model Picker for custom endpoint */}
             {!isEditing && (
-              <div className="flex flex-wrap items-center justify-between w-full gap-2 pt-3 border-t border-[var(--border)]/70 mt-2">
+              <ModelPicker
+                provider={cp}
+                onModelSelected={() => onRefresh()}
+                onRequireUnlock={onRequireUnlock}
+              />
+            )}
+
+            {!isEditing && (
+              <div className="flex flex-wrap items-center justify-between w-full gap-2 pt-3 border-t border-[var(--border)]/70 mt-3">
                 <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleTestCustomKey(cp)}
+                    loading={isTesting}
+                    disabled={isTesting}
+                    leftIcon={<Sparkles className="w-3.5 h-3.5 text-[var(--accent)]" />}
+                  >
+                    Test key
+                  </Button>
+
                   <Button
                     variant="ghost"
                     size="sm"
@@ -470,6 +591,7 @@ export function CustomProviderSection({
                   >
                     Replace key
                   </Button>
+
                   {!cp.isDefault && (
                     <Button
                       variant="ghost"

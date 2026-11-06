@@ -22,6 +22,26 @@ export interface StoredProvider {
   createdAt: number;
   updatedAt: number;
   isCustom?: boolean;
+  defaultModel?: string;
+  lastTestStatus?: 'valid' | 'invalid' | 'rate_limited' | 'unverified';
+  lastTestedAt?: number;
+  lastTestError?: string;
+}
+
+export interface StoredModelCache {
+  providerId: string;
+  models: any[];
+  fetchedAt: number;
+}
+
+export interface StoredMessage {
+  id: string;
+  projectId: string;
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+  model?: string;
+  provider?: string;
 }
 
 export interface MetaItem {
@@ -33,6 +53,8 @@ export class DesyraDatabase extends Dexie {
   projects!: Table<Project, string>;
   providers!: Table<StoredProvider, string>;
   meta!: Table<MetaItem, string>;
+  modelCache!: Table<StoredModelCache, string>;
+  messages!: Table<StoredMessage, string>;
 
   constructor() {
     super('desyra_db');
@@ -43,6 +65,13 @@ export class DesyraDatabase extends Dexie {
       projects: 'id, title, createdAt, updatedAt',
       providers: 'id, providerType, label, isDefault, createdAt, updatedAt',
       meta: 'key',
+    });
+    this.version(3).stores({
+      projects: 'id, title, createdAt, updatedAt',
+      providers: 'id, providerType, label, isDefault, createdAt, updatedAt, defaultModel, lastTestStatus',
+      meta: 'key',
+      modelCache: 'providerId, fetchedAt',
+      messages: 'id, projectId, createdAt, role',
     });
   }
 }
@@ -247,7 +276,7 @@ export async function clearAllKeys(): Promise<boolean> {
 }
 
 /**
- * Clears all data (projects, providers, and meta) from IndexedDB.
+ * Clears all data (projects, providers, meta, modelCache, and messages) from IndexedDB.
  */
 export async function clearAllDatabaseData(): Promise<boolean> {
   const database = getDb();
@@ -256,9 +285,107 @@ export async function clearAllDatabaseData(): Promise<boolean> {
     await database.projects.clear();
     await database.providers.clear();
     await database.meta.clear();
+    await database.modelCache.clear();
+    await database.messages.clear();
     return true;
   } catch (error) {
     console.error('[DESYRA DB] Failed to clear all database data:', error);
     return false;
   }
 }
+
+/**
+ * Updates metadata on an existing provider (status, default model, etc).
+ */
+export async function updateProviderRecord(
+  providerId: string,
+  updates: Partial<StoredProvider>
+): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.providers.update(providerId, {
+      ...updates,
+      updatedAt: Date.now(),
+    });
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to update provider ${providerId}:`, error);
+  }
+}
+
+/**
+ * Model cache helpers.
+ */
+export async function getModelCache(providerId: string): Promise<StoredModelCache | null> {
+  const database = getDb();
+  if (!database) return null;
+  try {
+    const item = await database.modelCache.get(providerId);
+    return item ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setModelCache(providerId: string, models: any[]): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.modelCache.put({
+      providerId,
+      models,
+      fetchedAt: Date.now(),
+    });
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to cache models for ${providerId}:`, error);
+  }
+}
+
+/**
+ * Project conversation messages helpers.
+ */
+export async function listProjectMessages(projectId: string): Promise<StoredMessage[]> {
+  const database = getDb();
+  if (!database) return [];
+  try {
+    const list = await database.messages
+      .where('projectId')
+      .equals(projectId)
+      .sortBy('createdAt');
+    return list;
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to list messages for project ${projectId}:`, error);
+    return [];
+  }
+}
+
+export async function saveProjectMessage(msg: StoredMessage): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.messages.put(msg);
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to save message:', error);
+  }
+}
+
+export async function updateProjectMessageContent(id: string, content: string): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.messages.update(id, { content });
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to update message ${id}:`, error);
+  }
+}
+
+export async function clearProjectMessages(projectId: string): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.messages.where('projectId').equals(projectId).delete();
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to clear messages for project ${projectId}:`, error);
+  }
+}
+

@@ -26,6 +26,10 @@ export interface SafeProviderInfo {
   createdAt: number;
   updatedAt: number;
   isCustom?: boolean;
+  defaultModel?: string;
+  lastTestStatus?: 'valid' | 'invalid' | 'rate_limited' | 'unverified';
+  lastTestedAt?: number;
+  lastTestError?: string;
 }
 
 // In-memory session key for passphrase mode (never persisted to storage)
@@ -132,11 +136,73 @@ export async function listProviders(): Promise<SafeProviderInfo[]> {
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       isCustom: Boolean(item.isCustom),
+      defaultModel: item.defaultModel,
+      lastTestStatus: item.lastTestStatus,
+      lastTestedAt: item.lastTestedAt,
+      lastTestError: item.lastTestError,
     }));
   } catch (error) {
     console.error('[DESYRA Keys] Failed to list providers:', error);
     return [];
   }
+}
+
+/**
+ * Sets the default model for a specific provider.
+ */
+export async function setDefaultModel(providerId: string, modelId: string): Promise<boolean> {
+  const database = getDb();
+  if (!database) return false;
+  try {
+    await database.providers.update(providerId, {
+      defaultModel: modelId.trim(),
+      updatedAt: Date.now(),
+    });
+    return true;
+  } catch (error) {
+    console.error(`[DESYRA Keys] Failed to set default model for ${providerId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Updates test status metadata for a provider.
+ */
+export async function updateProviderTestStatus(
+  providerId: string,
+  status: 'valid' | 'invalid' | 'rate_limited' | 'unverified',
+  error?: string
+): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    await database.providers.update(providerId, {
+      lastTestStatus: status,
+      lastTestedAt: Date.now(),
+      lastTestError: error,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error(`[DESYRA Keys] Failed to update test status for ${providerId}:`, err);
+  }
+}
+
+/**
+ * Returns the currently active default provider and its chosen default model.
+ */
+export async function getActiveProviderAndModel(): Promise<{
+  provider: SafeProviderInfo | null;
+  model: string | null;
+}> {
+  const providers = await listProviders();
+  if (providers.length === 0) {
+    return { provider: null, model: null };
+  }
+  const defaultProvider = providers.find((p) => p.isDefault) || providers[0];
+  return {
+    provider: defaultProvider,
+    model: defaultProvider.defaultModel || null,
+  };
 }
 
 export interface SaveKeyParams {

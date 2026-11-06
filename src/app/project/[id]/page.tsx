@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { formatRelativeTime } from '@/lib/utils';
+import { DevPreviewPanel } from '@/components/chat/dev-preview-panel';
 
 interface ProjectPageProps {
   params: Promise<{ id: string }>;
@@ -140,6 +141,9 @@ export default function ProjectPage({ params }: ProjectPageProps) {
             {project.idea}
           </div>
         </Card>
+
+        {/* Temporary Developer Preview Chat Panel */}
+        <DevPreviewPanel projectId={project.id} projectIdea={project.idea} />
 
         {/* Info Card: IDE Coming in Push 4 */}
         <Card elevated className="p-6 border-[#303038]">

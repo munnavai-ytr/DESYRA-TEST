@@ -28,11 +28,20 @@ DESYRA is a premium, precise, dark-themed AI application builder interface.
   - `success`: `#22C55E`, `warning`: `#F5B73B`, `error`: `#EF4444`, `info`: `#60A5FA`
 - **Radii**: 8px (`sm`), 12px (`md`), 20px (`lg`), 9999px (`pill`).
 
-## Pages Implemented in Push 1 & 2
+## Pages Implemented in Pushes 1, 2 & 3
 - `/`: Home hero with headline, auto-growing chat box (min 3 to ~10 rows), 6 starter prompt chips, round orange send button, character counter, recent projects list from IndexedDB, and BYOK gating modal preserving drafts when no key is configured.
 - `/projects`: Grid of saved projects from Dexie IndexedDB with open and delete actions (with accessible confirmation modal and toast notifications).
-- `/settings`: Full Bring-Your-Own-Key management (Google Gemini, Groq, OpenRouter, OpenAI, Anthropic, and custom endpoints) with AES-GCM encryption, passphrase protection controls, and danger zone data wipe options.
-- `/project/[id]`: Project specification viewer with saved prompt and the "IDE arrives in Push 4" status card.
+- `/settings`: Full Bring-Your-Own-Key management (Google Gemini, Groq, OpenRouter, OpenAI, Anthropic, and custom endpoints) with AES-GCM encryption, passphrase protection controls, danger zone data wipe options, live "Test key" verification, and searchable Model Pickers.
+- `/project/[id]`: Project specification viewer with saved prompt, the "IDE arrives in Push 4" roadmap card, and the new **Developer Preview Chat Panel** featuring live token-by-token streaming, AbortController stop/retry, auto-scrolling, provider switcher, and IndexedDB message persistence.
+
+## Providers and Known Limitations
+
+1. **Direct Browser Execution (Client-Side Calls)**:
+   - All AI API calls execute directly from your web browser using your decrypted local keys at request time.
+   - **CORS Constraints**: Providers like Google Gemini and OpenRouter natively support browser origins. Anthropic calls use the official `anthropic-dangerous-direct-browser-access: true` header. Some strict OpenAI or corporate custom gateway endpoints may enforce strict CORS policies that disallow direct origin requests. A local/proxy relay feature is scheduled for a subsequent release.
+2. **Dynamic Free-Tier Limits**:
+   - Free-tier quotas, requests-per-minute (RPM), and token concurrency limits are governed entirely by each upstream provider (e.g., Google AI Studio, Groq Cloud, OpenRouter free models).
+   - If a provider reports HTTP 429, DESYRA notifies you with the suggested retry-after window and allows you to hot-swap to another configured provider immediately.
 
 ## Key Storage and Security
 

@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
-export type ToastType = 'success' | 'error' | 'info';
+export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
 export interface ToastItem {
   id: string;
@@ -102,12 +102,14 @@ function ToastCard({ toast, onDismiss }: { toast: ToastItem; onDismiss: () => vo
     success: <CheckCircle2 className="w-4 h-4 text-[var(--success)] shrink-0" />,
     error: <AlertCircle className="w-4 h-4 text-[var(--error)] shrink-0" />,
     info: <Info className="w-4 h-4 text-[var(--info)] shrink-0" />,
+    warning: <AlertCircle className="w-4 h-4 text-[var(--warning)] shrink-0" />,
   };
 
   const borders = {
     success: 'border-[rgba(34,197,94,0.3)]',
     error: 'border-[rgba(239,68,68,0.3)]',
     info: 'border-[rgba(96,165,250,0.3)]',
+    warning: 'border-[rgba(245,183,59,0.3)]',
   };
 
   return (

@@ -118,13 +118,30 @@ export default function SettingsPage() {
       </div>
 
       {/* Header */}
-      <div>
-        <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[var(--text)]">
-          Settings &amp; Keys
-        </h1>
-        <p className="text-sm text-[var(--muted)] mt-1">
-          Manage your Bring-Your-Own-Key (BYOK) providers and local browser encryption.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[var(--text)]">
+            Settings &amp; Keys
+          </h1>
+          <p className="text-sm text-[var(--muted)] mt-1">
+            Manage your Bring-Your-Own-Key (BYOK) providers and local browser encryption.
+          </p>
+        </div>
+
+        {/* Global Active Model Chip */}
+        {providers.length > 0 && (() => {
+          const defaultProvider = providers.find((p) => p.isDefault) || providers[0];
+          return (
+            <div className="flex items-center gap-2 p-2 px-3 rounded-[var(--radius-pill)] bg-[var(--surface)] border border-[var(--border)] text-xs text-[var(--muted)] shrink-0 self-start sm:self-auto">
+              <span className="w-2 h-2 rounded-full bg-[var(--accent)] shadow-[0_0_8px_rgba(255,107,26,0.8)]" />
+              <span className="font-medium text-[var(--text)]">{defaultProvider.label}</span>
+              <span className="text-[var(--disabled)]">/</span>
+              <span className="font-mono text-[var(--accent)]">
+                {defaultProvider.defaultModel || 'No model selected'}
+              </span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Storage Error Banner */}

@@ -11,12 +11,15 @@ import {
   RefreshCw,
   Trash2,
   Key,
+  Sparkles,
+  Clock,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
+import { Tooltip } from '@/components/ui/tooltip';
 import {
   type ProviderDefinition,
   checkKeyPrefixWarning,
@@ -27,7 +30,10 @@ import {
   deleteKey,
   setDefault,
 } from '@/lib/keys';
+import { testKey } from '@/lib/ai';
 import { useToast } from '@/components/ui/toast';
+import { formatRelativeTime } from '@/lib/utils';
+import { ModelPicker } from './model-picker';
 
 export interface ProviderCardProps {
   provider: ProviderDefinition;
@@ -47,6 +53,7 @@ export function ProviderCard({
   const [keyInput, setKeyInput] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -56,6 +63,53 @@ export function ProviderCard({
   const isDefault = Boolean(savedInfo?.isDefault);
 
   const prefixWarning = checkKeyPrefixWarning(provider.id, keyInput);
+
+  const handleTestKey = async () => {
+    if (!savedInfo) return;
+    setIsTesting(true);
+    try {
+      const res = await testKey(savedInfo);
+      if (res.valid) {
+        toast({
+          type: 'success',
+          title: 'Key Verified',
+          message: `${provider.name} API key is valid. Model list loaded.`,
+        });
+      } else if (res.status === 'rate_limited') {
+        toast({
+          type: 'warning',
+          title: 'Rate Limit Detected',
+          message: res.error || `${provider.name} rate limit reached.`,
+        });
+      } else if (res.status === 'invalid') {
+        toast({
+          type: 'error',
+          title: 'Key Rejected',
+          message: res.error || 'This key was rejected by the provider.',
+        });
+      } else {
+        toast({
+          type: 'info',
+          title: "Couldn't Verify",
+          message: res.error || 'Could not verify connection.',
+        });
+      }
+      onRefresh();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to test key';
+      if (msg.includes('locked')) {
+        onRequireUnlock?.();
+      } else {
+        toast({
+          type: 'error',
+          title: 'Test Failed',
+          message: msg,
+        });
+      }
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -144,6 +198,51 @@ export function ProviderCard({
     }
   };
 
+  const renderStatusBadge = () => {
+    if (!isSaved) {
+      return (
+        <Badge variant="default" size="sm">
+          Not added
+        </Badge>
+      );
+    }
+
+    if (savedInfo?.lastTestStatus === 'valid') {
+      return (
+        <Badge variant="success" size="sm">
+          Valid
+        </Badge>
+      );
+    }
+    if (savedInfo?.lastTestStatus === 'invalid') {
+      return (
+        <Badge variant="error" size="sm">
+          Invalid
+        </Badge>
+      );
+    }
+    if (savedInfo?.lastTestStatus === 'rate_limited') {
+      return (
+        <Badge variant="warning" size="sm">
+          Rate-limited
+        </Badge>
+      );
+    }
+    if (savedInfo?.lastTestStatus === 'unverified') {
+      return (
+        <Badge variant="default" size="sm">
+          Couldn&apos;t verify
+        </Badge>
+      );
+    }
+
+    return (
+      <Badge variant="success" size="sm">
+        Saved
+      </Badge>
+    );
+  };
+
   return (
     <>
       <Card className="p-5 flex flex-col justify-between transition-all">
@@ -162,22 +261,12 @@ export function ProviderCard({
             </div>
 
             <div className="flex items-center gap-1.5">
-              {isSaved ? (
-                <>
-                  {isDefault && (
-                    <Badge variant="accent" size="sm" className="font-semibold">
-                      Default
-                    </Badge>
-                  )}
-                  <Badge variant="success" size="sm">
-                    Saved
-                  </Badge>
-                </>
-              ) : (
-                <Badge variant="default" size="sm">
-                  Not added
+              {isSaved && isDefault && (
+                <Badge variant="accent" size="sm" className="font-semibold">
+                  Default
                 </Badge>
               )}
+              {renderStatusBadge()}
             </div>
           </div>
 
@@ -194,17 +283,29 @@ export function ProviderCard({
 
           {/* Saved Key State Display */}
           {isSaved && !isFormOpen && (
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-[var(--radius-md)] bg-[var(--elevated)] border border-[var(--border)] mb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-[var(--radius-md)] bg-[var(--elevated)] border border-[var(--border)] mb-3 text-xs">
               <div className="flex items-center gap-2">
                 <Key className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />
                 <span className="font-mono text-xs text-[var(--text)] tracking-wider">
                   ••••••••{savedInfo?.last4}
                 </span>
               </div>
-              <span className="text-[11px] text-[var(--disabled)]">
-                Key testing and model list arrive in Push 3.
-              </span>
+
+              {savedInfo?.lastTestedAt && (
+                <span className="text-[11px] text-[var(--disabled)] flex items-center gap-1 tabular-nums">
+                  <Clock className="w-3 h-3" />
+                  <span>Tested {formatRelativeTime(savedInfo.lastTestedAt)}</span>
+                </span>
+              )}
             </div>
+          )}
+
+          {/* Key test error message if failed */}
+          {isSaved && savedInfo?.lastTestError && savedInfo.lastTestStatus !== 'valid' && (
+            <p className="text-xs text-[var(--error)] mb-3 p-2 rounded-[var(--radius-sm)] bg-[rgba(239,68,68,0.08)] border border-[rgba(239,68,68,0.2)] flex items-start gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>{savedInfo.lastTestError}</span>
+            </p>
           )}
 
           {/* Inline Add/Replace Form */}
@@ -297,11 +398,20 @@ export function ProviderCard({
               </div>
             </form>
           )}
+
+          {/* Model Picker Section for Saved Provider */}
+          {isSaved && !isFormOpen && savedInfo && (
+            <ModelPicker
+              provider={savedInfo}
+              onModelSelected={() => onRefresh()}
+              onRequireUnlock={onRequireUnlock}
+            />
+          )}
         </div>
 
         {/* Action Button Bar */}
         {!isFormOpen && (
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[var(--border)]/70 mt-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[var(--border)]/70 mt-3">
             {!isSaved ? (
               <Button
                 variant="secondary"
@@ -315,6 +425,17 @@ export function ProviderCard({
               <div className="flex flex-wrap items-center justify-between w-full gap-2">
                 <div className="flex items-center gap-2">
                   <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleTestKey}
+                    loading={isTesting}
+                    disabled={isTesting}
+                    leftIcon={<Sparkles className="w-3.5 h-3.5 text-[var(--accent)]" />}
+                  >
+                    Test key
+                  </Button>
+
+                  <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => setIsFormOpen(true)}
@@ -322,6 +443,7 @@ export function ProviderCard({
                   >
                     Replace key
                   </Button>
+
                   {!isDefault && (
                     <Button
                       variant="ghost"
