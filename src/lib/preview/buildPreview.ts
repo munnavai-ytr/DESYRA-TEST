@@ -51,6 +51,37 @@ export const PREVIEW_CSP =
   "base-uri 'none';";
 
 /**
+ * Checks whether a URL or attribute reference should be ignored for missing file warnings.
+ */
+export function isIgnoredReference(val: string): boolean {
+  const trimmed = val.trim();
+  if (!trimmed) return true;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('http:') ||
+    lower.startsWith('https:') ||
+    lower.startsWith('//') ||
+    lower.startsWith('data:') ||
+    lower.startsWith('blob:') ||
+    lower.startsWith('#') ||
+    lower.startsWith('mailto:') ||
+    lower.startsWith('tel:') ||
+    lower.startsWith('javascript:')
+  ) {
+    return true;
+  }
+  if (
+    trimmed.includes('${') ||
+    trimmed.includes('{{') ||
+    trimmed.includes('{%') ||
+    trimmed.includes('<%')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Checks whether a project contains unsupported frameworks or configs (React/TSX/Vue/package.json).
  */
 export function detectUnsupportedStack(files: Array<{ path: string }>): {
@@ -136,8 +167,60 @@ export function resolveRelativePath(baseFilePath: string, reference: string): st
 }
 
 /**
+ * Detects if a referenced file path is missing but a clearly similar file exists in the project.
+ */
+export function findSimilarFile(
+  files: Array<{ path: string; content: string }>,
+  targetPath: string
+): { path: string } | null {
+  const cleanRef = targetPath.split('?')[0].split('#')[0].trim();
+  const parts = cleanRef.split('.');
+  if (parts.length < 2) return null;
+  const ext = parts.pop()!.toLowerCase();
+  const targetFilename = cleanRef.split('/').pop()!.toLowerCase();
+  const targetStem = targetFilename.slice(0, targetFilename.length - ext.length - 1);
+
+  // Find candidates with the same extension
+  const candidates = files.filter((f) => {
+    const fClean = f.path.trim();
+    if (fClean === cleanRef) return false;
+    const fParts = fClean.split('.');
+    if (fParts.length < 2) return false;
+    const fExt = fParts.pop()!.toLowerCase();
+    return fExt === ext;
+  });
+
+  if (candidates.length === 0) return null;
+
+  for (const candidate of candidates) {
+    const cFilename = candidate.path.split('/').pop()!.toLowerCase();
+    const cStem = cFilename.slice(0, cFilename.length - ext.length - 1);
+
+    if (
+      (targetStem === 'styles' && cStem === 'style') ||
+      (targetStem === 'style' && cStem === 'styles') ||
+      (targetStem === 'scripts' && cStem === 'script') ||
+      (targetStem === 'script' && cStem === 'scripts') ||
+      (targetStem === 'app' && (cStem === 'script' || cStem === 'main' || cStem === 'index')) ||
+      (targetStem === 'script' && (cStem === 'app' || cStem === 'main' || cStem === 'index'))
+    ) {
+      return candidate;
+    }
+    if (targetStem && cStem && (targetStem.includes(cStem) || cStem.includes(targetStem))) {
+      return candidate;
+    }
+  }
+
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+
+  return null;
+}
+
+/**
  * Finds a file in the project by normalized path.
- * Checks exact match first, then case-insensitive match with warning.
+ * Checks exact match first, then case-insensitive match, then similar file warning.
  */
 export function lookupFile(
   files: Array<{ path: string; content: string }>,
@@ -145,6 +228,10 @@ export function lookupFile(
   sourceFile: string,
   warnings: PreviewWarning[]
 ): { file: { path: string; content: string } | null; warning?: PreviewWarning } {
+  if (isIgnoredReference(targetPath)) {
+    return { file: null };
+  }
+
   // 1. Exact match
   const exact = files.find((f) => f.path === targetPath);
   if (exact) {
@@ -164,7 +251,19 @@ export function lookupFile(
     return { file: caseInsensitive, warning: warn };
   }
 
-  // 3. Missing file
+  // 3. Similar file warning (e.g. styles.css vs style.css)
+  const similar = findSimilarFile(files, targetPath);
+  if (similar) {
+    const warn: PreviewWarning = {
+      type: 'missing_file',
+      message: `${sourceFile} links to ${targetPath}, but only ${similar.path} exists`,
+      file: sourceFile,
+    };
+    warnings.push(warn);
+    return { file: null, warning: warn };
+  }
+
+  // 4. Missing file
   const warn: PreviewWarning = {
     type: 'missing_file',
     message: `File "${targetPath}" referenced from "${sourceFile}" was not found.`,
@@ -190,7 +289,6 @@ export function fileToDataUri(path: string, content: string): string {
  */
 export function extractRelativeImports(jsCode: string): string[] {
   const imports: string[] = [];
-  // Match: import ... from './path' or import './path' or export ... from './path'
   const staticRegex = /(?:import|export)\s+(?:[\w*\s{},]*\s+from\s+)?['"](\.[^'"]+)['"]/g;
   let match: RegExpExecArray | null;
 
@@ -198,7 +296,6 @@ export function extractRelativeImports(jsCode: string): string[] {
     imports.push(match[1]);
   }
 
-  // Match: dynamic import('./path')
   const dynamicRegex = /import\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
   while ((match = dynamicRegex.exec(jsCode)) !== null) {
     imports.push(match[1]);
@@ -209,24 +306,19 @@ export function extractRelativeImports(jsCode: string): string[] {
 
 /**
  * Rewrites ES Module relative import specifiers in dependency order to blob: URLs.
- * Detects circular dependencies and reports warnings without hanging.
  */
 export function processModulesToBlobUrls(
   files: Array<{ path: string; content: string }>,
   warnings: PreviewWarning[],
   createdBlobUrls: string[]
 ): Map<string, string> {
-  // Map of filePath -> blobUrl
   const moduleBlobMap = new Map<string, string>();
 
-  // If in non-browser environment (e.g. Node tests without URL.createObjectURL),
-  // mock URL.createObjectURL gracefully
   const createBlobUrl =
     typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
       ? (code: string) => URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
       : (code: string) => `blob:mock-url-${Math.random().toString(36).slice(2)}`;
 
-  // Filter JS files
   const jsFiles = files.filter(
     (f) =>
       f.path.endsWith('.js') ||
@@ -234,7 +326,6 @@ export function processModulesToBlobUrls(
       f.path.endsWith('.cjs')
   );
 
-  // Build dependency graph: file -> Set of referenced file paths
   const dependencyGraph = new Map<string, Set<string>>();
 
   for (const jsFile of jsFiles) {
@@ -243,7 +334,6 @@ export function processModulesToBlobUrls(
 
     for (const raw of rawImports) {
       let resolved = resolveRelativePath(jsFile.path, raw);
-      // Auto-append .js if extension missing
       if (!resolved.endsWith('.js') && !resolved.endsWith('.mjs') && !resolved.endsWith('.json')) {
         const candidate = `${resolved}.js`;
         if (files.some((f) => f.path === candidate)) {
@@ -255,7 +345,6 @@ export function processModulesToBlobUrls(
     dependencyGraph.set(jsFile.path, resolvedDeps);
   }
 
-  // Detect circular imports using DFS
   const visited = new Set<string>();
   const recursionStack = new Set<string>();
   const circularPairs = new Set<string>();
@@ -292,13 +381,12 @@ export function processModulesToBlobUrls(
     }
   }
 
-  // Topological sorting (post-order traversal) to resolve leaves first
   const order: string[] = [];
   const processed = new Set<string>();
 
   function topoVisit(file: string, stack: Set<string>) {
     if (processed.has(file)) return;
-    if (stack.has(file)) return; // Break circular recursion
+    if (stack.has(file)) return;
     stack.add(file);
 
     const deps = dependencyGraph.get(file);
@@ -317,7 +405,6 @@ export function processModulesToBlobUrls(
     topoVisit(jsFile.path, new Set());
   }
 
-  // Generate blob URLs in topological order, rewriting imports with child blob URLs
   for (const filePath of order) {
     const fileItem = jsFiles.find((f) => f.path === filePath);
     if (!fileItem) continue;
@@ -326,8 +413,6 @@ export function processModulesToBlobUrls(
     const deps = dependencyGraph.get(filePath);
 
     if (deps && deps.size > 0) {
-      // Rewrite import specifiers
-      // Static import / export: import ... from './path' -> import ... from 'blob:...'
       rewrittenCode = rewrittenCode.replace(
         /((?:import|export)\s+(?:[\w*\s{},]*\s+from\s+)?)(['"])(\.[^'"]+)\2/g,
         (full: string, prefix: string, quote: string, specifier: string) => {
@@ -346,7 +431,6 @@ export function processModulesToBlobUrls(
         }
       );
 
-      // Dynamic import: import('./path') -> import('blob:...')
       rewrittenCode = rewrittenCode.replace(
         /(import\s*\(\s*)(['"])(\.[^'"]+)\2(\s*\))/g,
         (full: string, prefix: string, quote: string, specifier: string, suffix: string) => {
@@ -412,13 +496,11 @@ export function buildPreviewDocument(
   }
 
   if (!entryFile) {
-    // Default to root index.html
     entryFile =
       files.find((f) => f.path === 'index.html' || f.path === './index.html') || null;
   }
 
   if (!entryFile) {
-    // Fall back to first HTML file sorted alphabetically
     const htmlFiles = files
       .filter((f) => f.path.endsWith('.html') || f.path.endsWith('.htm'))
       .sort((a, b) => a.path.localeCompare(b.path));
@@ -442,118 +524,60 @@ export function buildPreviewDocument(
   // 3. Process ES modules to blob URLs
   const moduleBlobMap = processModulesToBlobUrls(files, warnings, blobUrls);
 
-  // 4. Inline CSS stylesheets: <link rel="stylesheet" href="...">
-  documentHtml = documentHtml.replace(
-    /<link\b([^>]*?)>/gi,
-    (fullTag, attrs) => {
-      const isStylesheet = /\brel\s*=\s*(?:["']stylesheet["']|stylesheet\b)/i.test(attrs);
-      if (!isStylesheet) {
-        // If it's a favicon or icon pointing to local file
-        const isIcon = /\brel\s*=\s*(?:["'](?:shortcut\s+)?icon["']|icon\b)/i.test(attrs);
-        const hrefMatch = /\bhref\s*=\s*["']([^"']+)["']/i.exec(attrs);
-        if (isIcon && hrefMatch) {
-          const href = hrefMatch[1].trim();
-          if (!/^https?:|^\/\//i.test(href)) {
-            const resolved = resolveRelativePath(entryFile!.path, href);
-            const found = lookupFile(files, resolved, entryFile!.path, warnings);
-            if (found.file) {
-              usedFiles.push(found.file.path);
-              const dataUri = fileToDataUri(found.file.path, found.file.content);
-              return fullTag.replace(hrefMatch[0], `href="${dataUri}"`);
-            }
-          }
-        }
-        return fullTag;
-      }
+  // 4. Tokenize non-markup regions into placeholders
+  // Regions to protect: comments, <script>, <style>, <textarea>, <title>
+  const placeholders: string[] = [];
+  const createPlaceholder = (content: string): string => {
+    const idx = placeholders.length;
+    placeholders.push(content);
+    return `\u0000DESYRA_${idx}\u0000`;
+  };
 
-      const hrefMatch = /\bhref\s*=\s*["']([^"']+)["']/i.exec(attrs);
-      if (!hrefMatch) return fullTag;
-
-      const href = hrefMatch[1].trim();
-      // Keep CDN or external stylesheets intact
-      if (/^https?:|^\/\//i.test(href)) {
-        return fullTag;
-      }
-
-      // Local stylesheet
-      const resolved = resolveRelativePath(entryFile!.path, href);
-      const found = lookupFile(files, resolved, entryFile!.path, warnings);
-
-      if (found.file) {
-        usedFiles.push(found.file.path);
-        let cssContent = found.file.content;
-
-        // Resolve local asset url(...) in CSS
-        cssContent = cssContent.replace(
-          /url\(\s*(['"]?)([^'"()]+)\1\s*\)/gi,
-          (urlMatch, q, assetRef) => {
-            const trimmedRef = assetRef.trim();
-            if (/^https?:|^\/\/|^data:/i.test(trimmedRef)) {
-              return urlMatch;
-            }
-            const resolvedAsset = resolveRelativePath(found.file!.path, trimmedRef);
-            const assetFound = lookupFile(files, resolvedAsset, found.file!.path, warnings);
-            if (assetFound.file) {
-              usedFiles.push(assetFound.file.path);
-              const uri = fileToDataUri(assetFound.file.path, assetFound.file.content);
-              return `url("${uri}")`;
-            }
-            return urlMatch;
-          }
-        );
-
-        // Escape any </style in CSS content
-        const safeCss = cssContent.replace(/<\/style/gi, '<\\/style');
-        return `<style data-src="${found.file.path}">\n${safeCss}\n</style>`;
-      }
-
-      return `<!-- Missing stylesheet: ${href} -->`;
-    }
+  // Mask HTML comments <!-- ... -->
+  documentHtml = documentHtml.replace(/<!--[\s\S]*?-->/gi, (match: string) =>
+    createPlaceholder(match)
   );
 
-  // 5. Inline classic and module scripts: <script src="...">
+  // Process and mask <script> elements
   documentHtml = documentHtml.replace(
     /<script\b([^>]*?)>([\s\S]*?)<\/script>/gi,
-    (fullTag, attrs, inlineContent) => {
+    (fullTag: string, attrs: string, inlineContent: string) => {
       const srcMatch = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs);
       const isModule = /\btype\s*=\s*["']module["']/i.test(attrs);
 
       if (srcMatch) {
         const src = srcMatch[1].trim();
-        // External CDN script: keep untouched
-        if (/^https?:|^\/\//i.test(src)) {
-          return fullTag;
+        if (isIgnoredReference(src)) {
+          return createPlaceholder(fullTag);
         }
 
         const resolved = resolveRelativePath(entryFile!.path, src);
 
         if (isModule) {
-          // ES module script
           const blobUrl = moduleBlobMap.get(resolved);
           if (blobUrl) {
             usedFiles.push(resolved);
-            return `<script type="module" src="${blobUrl}" data-src="${resolved}"></script>`;
+            const tag = `<script type="module" src="${blobUrl}" data-src="${resolved}"></script>`;
+            return createPlaceholder(tag);
           } else {
             lookupFile(files, resolved, entryFile!.path, warnings);
-            return `<!-- Missing module script: ${src} -->`;
+            return createPlaceholder(`<!-- Missing module script: ${src} -->`);
           }
         } else {
-          // Classic script: inline content preserving order
           const found = lookupFile(files, resolved, entryFile!.path, warnings);
           if (found.file) {
             usedFiles.push(found.file.path);
-            const safeJs = found.file.content.replace(/<\/script/gi, '<\\/script');
-            // Remove src attribute from tag attributes
+            const safeJs = found.file.content.replace(/<\/script/gi, () => '<\\/script');
             const cleanedAttrs = attrs.replace(/\bsrc\s*=\s*["'][^"']+["']/i, '').trim();
             const space = cleanedAttrs ? ' ' : '';
-            return `<script${space}${cleanedAttrs} data-src="${found.file.path}">\n${safeJs}\n</script>`;
+            const tag = `<script${space}${cleanedAttrs} data-src="${found.file.path}">\n${safeJs}\n</script>`;
+            return createPlaceholder(tag);
           }
-          return `<!-- Missing script: ${src} -->`;
+          return createPlaceholder(`<!-- Missing script: ${src} -->`);
         }
       }
 
       if (isModule && inlineContent.trim()) {
-        // Inline module: rewrite relative import specifiers to blob URLs
         let rewritten = inlineContent;
         rewritten = rewritten.replace(
           /((?:import|export)\s+(?:[\w*\s{},]*\s+from\s+)?)(['"])(\.[^'"]+)\2/g,
@@ -569,23 +593,105 @@ export function buildPreviewDocument(
             return blobUrl ? `${prefix}${quote}${blobUrl}${quote}` : full;
           }
         );
-        const safeInline = rewritten.replace(/<\/script/gi, '<\\/script');
-        return `<script${attrs ? ' ' + attrs : ''}>\n${safeInline}\n</script>`;
+        const safeInline = rewritten.replace(/<\/script/gi, () => '<\\/script');
+        const tag = `<script${attrs ? ' ' + attrs : ''}>\n${safeInline}\n</script>`;
+        return createPlaceholder(tag);
       }
 
-      return fullTag;
+      const safeInline = inlineContent.replace(/<\/script/gi, () => '<\\/script');
+      const tag = `<script${attrs ? ' ' + attrs : ''}>${safeInline}</script>`;
+      return createPlaceholder(tag);
     }
   );
 
-  // 6. Inline local images, source, video, audio assets (e.g. SVG)
+  // Mask <style> elements
+  documentHtml = documentHtml.replace(/<style\b[^>]*?>[\s\S]*?<\/style>/gi, (match: string) =>
+    createPlaceholder(match)
+  );
+
+  // Mask <textarea> elements
+  documentHtml = documentHtml.replace(/<textarea\b[^>]*?>[\s\S]*?<\/textarea>/gi, (match: string) =>
+    createPlaceholder(match)
+  );
+
+  // Mask <title> elements
+  documentHtml = documentHtml.replace(/<title\b[^>]*?>[\s\S]*?<\/title>/gi, (match: string) =>
+    createPlaceholder(match)
+  );
+
+  // 5. Perform Link, Stylesheet, Image, and Asset Rewrites on Markup Only
+  documentHtml = documentHtml.replace(
+    /<link\b([^>]*?)>/gi,
+    (fullTag: string, attrs: string) => {
+      const isStylesheet = /\brel\s*=\s*(?:["']stylesheet["']|stylesheet\b)/i.test(attrs);
+      if (!isStylesheet) {
+        const isIcon = /\brel\s*=\s*(?:["'](?:shortcut\s+)?icon["']|icon\b)/i.test(attrs);
+        const hrefMatch = /\bhref\s*=\s*["']([^"']+)["']/i.exec(attrs);
+        if (isIcon && hrefMatch) {
+          const href = hrefMatch[1].trim();
+          if (!isIgnoredReference(href)) {
+            const resolved = resolveRelativePath(entryFile!.path, href);
+            const found = lookupFile(files, resolved, entryFile!.path, warnings);
+            if (found.file) {
+              usedFiles.push(found.file.path);
+              const dataUri = fileToDataUri(found.file.path, found.file.content);
+              return fullTag.replace(hrefMatch[0], () => `href="${dataUri}"`);
+            }
+          }
+        }
+        return fullTag;
+      }
+
+      const hrefMatch = /\bhref\s*=\s*["']([^"']+)["']/i.exec(attrs);
+      if (!hrefMatch) return fullTag;
+
+      const href = hrefMatch[1].trim();
+      if (isIgnoredReference(href)) {
+        return fullTag;
+      }
+
+      const resolved = resolveRelativePath(entryFile!.path, href);
+      const found = lookupFile(files, resolved, entryFile!.path, warnings);
+
+      if (found.file) {
+        usedFiles.push(found.file.path);
+        let cssContent = found.file.content;
+
+        cssContent = cssContent.replace(
+          /url\(\s*(['"]?)([^'"()]+)\1\s*\)/gi,
+          (urlMatch: string, q: string, assetRef: string) => {
+            const trimmedRef = assetRef.trim();
+            if (isIgnoredReference(trimmedRef)) {
+              return urlMatch;
+            }
+            const resolvedAsset = resolveRelativePath(found.file!.path, trimmedRef);
+            const assetFound = lookupFile(files, resolvedAsset, found.file!.path, warnings);
+            if (assetFound.file) {
+              usedFiles.push(assetFound.file.path);
+              const uri = fileToDataUri(assetFound.file.path, assetFound.file.content);
+              return `url("${uri}")`;
+            }
+            return urlMatch;
+          }
+        );
+
+        const safeCss = cssContent.replace(/<\/style/gi, () => '<\\/style');
+        return `<style data-src="${found.file.path}">\n${safeCss}\n</style>`;
+      }
+
+      return `<!-- Missing stylesheet: ${href} -->`;
+    }
+  );
+
+  // Inline local images, source, video, audio assets
   documentHtml = documentHtml.replace(
     /<(img|source|video|audio)\b([^>]*?)>/gi,
-    (fullTag, tag, attrs) => {
+    (fullTag: string, tag: string, attrs: string) => {
       const srcMatch = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs);
       if (!srcMatch) return fullTag;
 
       const src = srcMatch[1].trim();
-      if (/^https?:|^\/\/|^data:/i.test(src)) {
+      if (isIgnoredReference(src)) {
         return fullTag;
       }
 
@@ -594,20 +700,21 @@ export function buildPreviewDocument(
       if (found.file) {
         usedFiles.push(found.file.path);
         const dataUri = fileToDataUri(found.file.path, found.file.content);
-        return fullTag.replace(srcMatch[0], `src="${dataUri}"`);
+        return fullTag.replace(srcMatch[0], () => `src="${dataUri}"`);
       }
 
       return fullTag;
     }
   );
 
-  // 7. Structure normalization: ensure valid HTML wrapper, doctype, and <head>
+  // 6. Structure Normalization (doctype, <html>, <head>)
   let hasDoctype = /<!doctype\s+html/i.test(documentHtml);
   let hasHtmlTag = /<html\b/i.test(documentHtml);
   let hasHeadTag = /<head\b/i.test(documentHtml);
 
   if (!hasHtmlTag) {
-    documentHtml = `<!DOCTYPE html>\n<html lang="en">\n<head></head>\n<body>\n${documentHtml}\n</body>\n</html>`;
+    const prefix = hasDoctype ? '' : '<!DOCTYPE html>\n';
+    documentHtml = `${prefix}<html lang="en">\n<head></head>\n<body>\n${documentHtml}\n</body>\n</html>`;
     hasDoctype = true;
     hasHtmlTag = true;
     hasHeadTag = true;
@@ -616,26 +723,41 @@ export function buildPreviewDocument(
   }
 
   if (!hasHeadTag) {
-    // Insert <head></head> right after <html...>
-    documentHtml = documentHtml.replace(
-      /(<html\b[^>]*>)/i,
-      `$1\n<head></head>`
-    );
+    const htmlMatch = /<html\b[^>]*>/i.exec(documentHtml);
+    if (htmlMatch) {
+      const insertIdx = htmlMatch.index + htmlMatch[0].length;
+      documentHtml =
+        documentHtml.slice(0, insertIdx) +
+        '\n<head></head>' +
+        documentHtml.slice(insertIdx);
+      hasHeadTag = true;
+    }
   }
 
-  // 8. Generate runtime script and CSP meta
+  // 7. Inject CSP and Runtime script as VERY FIRST children of <head>
   const runtimeCode = generatePreviewRuntime(nonce, options.initialStorage || {});
-  const safeRuntimeScript = runtimeCode.replace(/<\/script/gi, '<\\/script');
+  const safeRuntimeScript = runtimeCode.replace(/<\/script/gi, () => '<\\/script');
 
   const headInjections =
     `  <meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">\n` +
     `  <script data-desyra-runtime="true">${safeRuntimeScript}</script>\n`;
 
-  // Inject CSP and Runtime as the VERY FIRST children of <head>
-  documentHtml = documentHtml.replace(
-    /(<head\b[^>]*>)/i,
-    `$1\n${headInjections}`
-  );
+  const headMatch = /<head\b[^>]*>/i.exec(documentHtml);
+  if (headMatch) {
+    const insertIdx = headMatch.index + headMatch[0].length;
+    documentHtml =
+      documentHtml.slice(0, insertIdx) +
+      '\n' +
+      headInjections +
+      documentHtml.slice(insertIdx);
+  }
+
+  // 8. Restore all masked non-markup placeholders in reverse order
+  for (let i = placeholders.length - 1; i >= 0; i--) {
+    const ph = `\u0000DESYRA_${i}\u0000`;
+    const content = placeholders[i];
+    documentHtml = documentHtml.replace(ph, () => content);
+  }
 
   return {
     html: documentHtml,

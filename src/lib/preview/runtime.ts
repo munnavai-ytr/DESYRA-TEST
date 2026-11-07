@@ -10,14 +10,28 @@ export interface RuntimeOptions {
   initialStorage?: Record<string, string>;
 }
 
+export function escapeScriptJson(obj: unknown): string {
+  return JSON.stringify(obj)
+    .replace(/</g, () => '\\u003c')
+    .replace(/>/g, () => '\\u003e')
+    .replace(/&/g, () => '\\u0026')
+    .replace(/\u2028/g, () => '\\u2028')
+    .replace(/\u2029/g, () => '\\u2029');
+}
+
 export function generatePreviewRuntime(nonce: string, initialStorage: Record<string, string> = {}): string {
-  const serializedStorage = JSON.stringify(initialStorage);
-  const safeNonce = JSON.stringify(nonce);
+  const safeNonce = escapeScriptJson(nonce);
+  const safeStorage = escapeScriptJson(initialStorage);
 
   return `(function() {
   'use strict';
   const NONCE = ${safeNonce};
-  const INITIAL_STORAGE = ${serializedStorage};
+  let INITIAL_STORAGE = {};
+  try {
+    INITIAL_STORAGE = ${safeStorage} || {};
+  } catch (e) {
+    console.warn('[DESYRA Runtime] Error parsing initial storage:', e);
+  }
 
   function sendToParent(payload) {
     try {

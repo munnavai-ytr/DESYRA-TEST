@@ -53,9 +53,11 @@ Push 6 delivers a free, 100% in-browser, zero-backend live preview engine:
    - **Persistent Preview Storage**: Shims `localStorage` and `sessionStorage` in the sandbox, backed by Dexie IndexedDB (`previewStorage` table, schema v5) with safety quotas: 200 KB per value, 1 MB total per project.
    - **Link Interception**: External links open safely in a new tab (`window.open(..., '_blank', 'noopener')`), hash anchors scroll smoothly into view, and relative `.html` links post navigation events to switch pages within the IDE.
 
-4. **Virtual Responsive Scaling**:
-   - Phone (`390px`), Tablet (`768px`), and Desktop (`1280px`).
-   - Automatically detects container bounds using `ResizeObserver` and applies smooth CSS transform scaling when the preview container is narrower than the target device, eliminating horizontal scrollbars.
+5. **Known Limits and Diagnostics**:
+   - **Static Web Scope**: Runs static HTML, CSS, JS, Alpine.js, Tailwind CDN, and Google Fonts. Projects containing React/TSX/Vue or `package.json` trigger a clear unsupported stack notification listing the detected files.
+   - **Storage Boundaries**: Simulated `localStorage` and `sessionStorage` persist up to 1 MB total per project (200 KB per value limit). `document.cookie` and `IndexedDB` inside the sandbox emit browser warnings.
+   - **Runtime Diagnostic Check**: If the preview iframe runtime does not post `ready` within 5 seconds, an amber warning appears in the console drawer ("Preview runtime did not start. The page may be malformed.").
+   - **Copy Diagnostics**: A "Copy diagnostics" button in the Console Drawer and "..." menu generates a sanitized summary containing entry path, file list with byte sizes, builder warnings, and the first 40 lines of the entry and built document (truncated to 4,000 chars, excluding all storage values or keys).
 
 ## The IDE Page (`/project/[id]`)
 

@@ -89,6 +89,8 @@ export function PreviewPane({ projectId, isVisible = true }: PreviewPaneProps) {
   // Nonce for validating postMessages from the currently rendered document
   const currentNonceRef = useRef<string>('');
   const previousBlobUrlsRef = useRef<string[]>([]);
+  const runtimeCheckTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const runtimeReceivedReadyRef = useRef<boolean>(false);
 
   // Console Drawer
   const [isConsoleOpen, setIsConsoleOpen] = useState<boolean>(false);
@@ -276,12 +278,34 @@ export function PreviewPane({ projectId, isVisible = true }: PreviewPaneProps) {
 
       previousBlobUrlsRef.current = result.blobUrls;
 
+      if (runtimeCheckTimerRef.current) {
+        clearTimeout(runtimeCheckTimerRef.current);
+        runtimeCheckTimerRef.current = null;
+      }
+      runtimeReceivedReadyRef.current = false;
+
       if (result.unsupported?.isUnsupported) {
         setUnsupportedInfo(result.unsupported);
         setHtmlContent('');
       } else {
         setUnsupportedInfo(null);
         setHtmlContent(result.html);
+
+        if (result.html) {
+          runtimeCheckTimerRef.current = setTimeout(() => {
+            if (!runtimeReceivedReadyRef.current) {
+              setConsoleLogs((prev) => [
+                ...prev,
+                {
+                  id: `log_runtime_warn_${Date.now()}`,
+                  level: 'warn',
+                  args: ['Preview runtime did not start. The page may be malformed.'],
+                  timestamp: Date.now(),
+                },
+              ]);
+            }
+          }, 5000);
+        }
       }
 
       setWarnings(result.warnings);
@@ -297,6 +321,41 @@ export function PreviewPane({ projectId, isVisible = true }: PreviewPaneProps) {
       setIsBuilding(false);
     }
   }, [projectId, selectedEntryPath, cleanupBlobs]);
+
+  // Copy Diagnostics generator
+  const handleCopyDiagnostics = useCallback(async () => {
+    try {
+      const files = await listFiles(projectId);
+      const fileListStr = files.map((f) => `- ${f.path} (${new Blob([f.content]).size} bytes)`).join('\n');
+      const entryFile = files.find((f) => f.path === selectedEntryPath) || files.find((f) => f.path === 'index.html');
+      const entryFirst40 = entryFile ? entryFile.content.split('\n').slice(0, 40).join('\n') : '(None)';
+      const builtFirst40 = htmlContent.split('\n').slice(0, 40).join('\n');
+      const warningsStr = warnings.map((w) => `- [${w.type}] ${w.message}`).join('\n') || '(None)';
+
+      const diagText = [
+        `=== DESYRA PREVIEW DIAGNOSTICS ===`,
+        `Entry Path: ${selectedEntryPath}`,
+        ``,
+        `Project Files (${files.length}):`,
+        fileListStr || '(No files)',
+        ``,
+        `Builder Warnings:`,
+        warningsStr,
+        ``,
+        `First 40 lines of Entry File (${selectedEntryPath}):`,
+        entryFirst40,
+        ``,
+        `First 40 lines of Built Document:`,
+        builtFirst40,
+      ].join('\n');
+
+      const truncated = diagText.length > 4000 ? diagText.slice(0, 4000) + '\n... [Truncated]' : diagText;
+      await navigator.clipboard.writeText(truncated);
+      notify({ type: 'success', message: 'Diagnostics copied to clipboard.' });
+    } catch (err) {
+      notify({ type: 'error', message: 'Failed to copy diagnostics.' });
+    }
+  }, [projectId, selectedEntryPath, htmlContent, warnings]);
 
   // Trigger rebuild when fileRevision bumps, respecting autoRefresh, visibility, and AI writing state
   useEffect(() => {
@@ -349,6 +408,14 @@ export function PreviewPane({ projectId, isVisible = true }: PreviewPaneProps) {
       // Security check: verify per-render nonce
       if (data.nonce !== currentNonceRef.current) {
         return;
+      }
+
+      if (data.type === 'ready') {
+        runtimeReceivedReadyRef.current = true;
+        if (runtimeCheckTimerRef.current) {
+          clearTimeout(runtimeCheckTimerRef.current);
+          runtimeCheckTimerRef.current = null;
+        }
       }
 
       if (data.type === 'console') {
@@ -667,6 +734,18 @@ export function PreviewPane({ projectId, isVisible = true }: PreviewPaneProps) {
                 <button
                   type="button"
                   onClick={() => {
+                    handleCopyDiagnostics();
+                    setIsMenuOpen(false);
+                  }}
+                  className="w-full px-3 py-2 text-left flex items-center gap-2 hover:bg-[var(--elevated)] text-[var(--text)] cursor-pointer"
+                >
+                  <FileCode className="w-3.5 h-3.5 text-[var(--muted)]" />
+                  <span>Copy Diagnostics</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
                     setIsClearModalOpen(true);
                     setIsMenuOpen(false);
                   }}
@@ -814,7 +893,17 @@ export function PreviewPane({ projectId, isVisible = true }: PreviewPaneProps) {
                   ({consoleLogs.length} logs)
                 </span>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
+                <Tooltip content="Copy preview diagnostics" position="top">
+                  <button
+                    type="button"
+                    onClick={handleCopyDiagnostics}
+                    className="px-2 py-0.5 text-[10px] font-medium rounded bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--text)] border border-[var(--border)] cursor-pointer"
+                  >
+                    Copy diagnostics
+                  </button>
+                </Tooltip>
+
                 <Tooltip content="Copy console output" position="top">
                   <IconButton
                     size="sm"

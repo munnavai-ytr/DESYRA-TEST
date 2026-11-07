@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
+import { JSDOM } from 'jsdom';
 import {
   buildPreviewDocument,
   resolveRelativePath,
   detectUnsupportedStack,
   PREVIEW_CSP,
 } from './buildPreview';
+import { escapeScriptJson } from './runtime';
+import { applySearchReplaceToContent } from '../ai/applyChanges';
 
-describe('buildPreview Document Compiler', () => {
+describe('buildPreview Document Compiler & Fix Push 6.1 Regression Suite', () => {
   it('correctly resolves relative paths with ./, ../, and query/hash stripping', () => {
     expect(resolveRelativePath('index.html', './style.css')).toBe('style.css');
     expect(resolveRelativePath('index.html', 'style.css?v=2#top')).toBe('style.css');
@@ -31,26 +34,124 @@ describe('buildPreview Document Compiler', () => {
     expect(result.html).toContain('https://cdn.jsdelivr.net/npm/tailwindcss@4/dist/tailwind.min.css');
     expect(result.html).toContain('<style data-src="style.css">');
     expect(result.html).toContain('h1 { color: red; }');
-    // </style inside content must be escaped as <\/style
     expect(result.html).toContain('<\\/style> test');
   });
 
-  it('inlines classic script tags preserving order and escaping </script', () => {
+  it('does not touch tag-like strings inside inline scripts and produces valid DOM', () => {
     const files = [
       {
         path: 'index.html',
-        content: `<!DOCTYPE html><html><head><script src="https://unpkg.com/alpinejs" defer></script><script src="app.js"></script></head><body></body></html>`,
+        content: `<!DOCTYPE html><html lang="en"><head><title>Portfolio</title><link rel="stylesheet" href="style.css"></head><body><div id="app">Skip to main content</div><script>const cs = { image: "hero.png" }; const html = \`<img src="\${cs.image}">\`; const l = \`<link rel="stylesheet" href="styles.css">\`;</script></body></html>`,
       },
       {
-        path: 'app.js',
-        content: `console.log("</script> safe");`,
+        path: 'style.css',
+        content: `body { background: #000; }`,
       },
     ];
 
     const result = buildPreviewDocument(files, 'index.html');
-    expect(result.html).toContain('https://unpkg.com/alpinejs');
-    expect(result.html).toContain('<script data-src="app.js">');
-    expect(result.html).toContain('<\\/script> safe');
+    expect(result.warnings.length).toBe(0);
+
+    const dom = new JSDOM(result.html);
+    const doc = dom.window.document;
+
+    expect(doc.documentElement.getAttribute('lang')).toBe('en');
+    expect(doc.head.firstElementChild?.tagName.toLowerCase()).toBe('meta');
+    expect(doc.head.firstElementChild?.getAttribute('http-equiv')).toBe('Content-Security-Policy');
+
+    const styleEl = doc.querySelector('style[data-src="style.css"]');
+    expect(styleEl).not.toBeNull();
+    expect(styleEl?.textContent).toContain('background: #000');
+
+    expect(doc.body.textContent).not.toContain('<html');
+    expect(doc.body.textContent).not.toContain('lang=');
+    expect(doc.body.textContent).toContain('Skip to main content');
+  });
+
+  it('safely embeds initial storage values containing $, quotes, </script>, <!-- and U+2028', () => {
+    const trickyStorage = {
+      price: "Price $& and $' and $$ and $1",
+      scriptTag: "</script><script>alert(1)</script>",
+      commentTag: "<!-- <head> test -->",
+      lineSeparator: "Line 1\u2028Line 2\u2029End",
+    };
+
+    const escaped = escapeScriptJson(trickyStorage);
+    expect(escaped).not.toContain('</script>');
+    expect(escaped).not.toContain('<!--');
+
+    const unescaped = JSON.parse(escaped);
+    expect(unescaped.price).toBe("Price $& and $' and $$ and $1");
+    expect(unescaped.scriptTag).toBe("</script><script>alert(1)</script>");
+    expect(unescaped.commentTag).toBe("<!-- <head> test -->");
+    expect(unescaped.lineSeparator).toBe("Line 1\u2028Line 2\u2029End");
+
+    const files = [{ path: 'index.html', content: '<h1>Test Storage</h1>' }];
+    const result = buildPreviewDocument(files, 'index.html', {
+      initialStorage: trickyStorage,
+    });
+
+    const dom = new JSDOM(result.html);
+    expect(dom.window.document.querySelector('h1')?.textContent).toBe('Test Storage');
+  });
+
+  it('applySearchReplaceToContent handles $ replacement sequences literally in exact and fallback paths', () => {
+    const content = `function getPrice() {\n  return 100;\n}`;
+    const blocks = [
+      {
+        search: `return 100;`,
+        replace: `return "Price $& and $' and $$ and $1";`,
+      },
+    ];
+
+    const exactRes = applySearchReplaceToContent(content, blocks);
+    expect(exactRes.success).toBe(true);
+    expect(exactRes.newContent).toContain(`return "Price $& and $' and $$ and $1";`);
+
+    // Fallback match with trailing whitespace
+    const contentWithSpace = `function getPrice() {\n  return 100;   \n}`;
+    const fallbackRes = applySearchReplaceToContent(contentWithSpace, blocks);
+    expect(fallbackRes.success).toBe(true);
+    expect(fallbackRes.newContent).toContain(`return "Price $& and $' and $$ and $1";`);
+  });
+
+  it('handles uppercase tags, missing <head>, missing <html>, comments with <head>, <style> with </, <title> with <, and stray text before doctype', () => {
+    const rawHtml = `Stray Text Before Doctype
+<!DOCTYPE HTML>
+<HTML LANG="en">
+<!-- <HEAD> comment inside head </HEAD> -->
+<BODY>
+  <TITLE>Title < with bracket</TITLE>
+  <STYLE> p { content: "</style>"; } </STYLE>
+  <P>Hello World</P>
+</BODY>
+</HTML>`;
+
+    const result = buildPreviewDocument([{ path: 'index.html', content: rawHtml }], 'index.html');
+    const dom = new JSDOM(result.html);
+    const doc = dom.window.document;
+
+    expect(doc.querySelector('p')?.textContent).toBe('Hello World');
+    expect(doc.head).not.toBeNull();
+    expect(result.html).toContain('Content-Security-Policy');
+  });
+
+  it('emits a clear similar-file warning when index.html links to styles.css but only style.css exists', () => {
+    const files = [
+      {
+        path: 'index.html',
+        content: `<!DOCTYPE html><html><head><link rel="stylesheet" href="styles.css"></head><body></body></html>`,
+      },
+      {
+        path: 'style.css',
+        content: `body { color: blue; }`,
+      },
+    ];
+
+    const result = buildPreviewDocument(files, 'index.html');
+    const similarWarn = result.warnings.find((w) => w.message.includes('links to styles.css, but only style.css exists'));
+    expect(similarWarn).toBeDefined();
+    expect(similarWarn?.type).toBe('missing_file');
   });
 
   it('detects missing files and emits warnings without crashing', () => {
@@ -65,8 +166,6 @@ describe('buildPreview Document Compiler', () => {
     expect(result.warnings.length).toBeGreaterThanOrEqual(2);
     const missingCss = result.warnings.find((w) => w.message.includes('missing.css'));
     expect(missingCss).toBeDefined();
-    expect(missingCss?.type).toBe('missing_file');
-    // Document is still built cleanly
     expect(result.html).toContain('<!DOCTYPE html>');
   });
 

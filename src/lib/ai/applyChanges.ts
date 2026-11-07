@@ -39,8 +39,8 @@ export interface ChangeApplierSession {
  * Normalizes text lines for whitespace/line-ending tolerant fallback matching
  */
 function normalizeForComparison(text: string): { normalizedLines: string[]; originalLines: string[] } {
-  // Normalize \r\n to \n
-  const standard = text.replace(/\r\n/g, '\n');
+  // Normalize \r\n to \n without regex string replacement
+  const standard = text.split('\r\n').join('\n');
   const originalLines = standard.split('\n');
   const normalizedLines = originalLines.map((line) => line.trimEnd());
   return { normalizedLines, originalLines };
@@ -66,9 +66,13 @@ export function applySearchReplaceToContent(
       };
     }
 
-    // 1. Try exact match
-    if (content.includes(block.search)) {
-      content = content.replace(block.search, block.replace);
+    // 1. Try exact match using indexOf and slice (safe against $ replacement patterns)
+    const exactMatchIdx = content.indexOf(block.search);
+    if (exactMatchIdx !== -1) {
+      content =
+        content.slice(0, exactMatchIdx) +
+        block.replace +
+        content.slice(exactMatchIdx + block.search.length);
       continue;
     }
 
@@ -96,7 +100,7 @@ export function applySearchReplaceToContent(
       // Found match! Replace original lines from matchIndex to matchIndex + searchLines.length
       const beforeLines = origLines.slice(0, matchIndex);
       const afterLines = origLines.slice(matchIndex + searchLines.length);
-      const replaceLines = block.replace.replace(/\r\n/g, '\n').split('\n');
+      const replaceLines = block.replace.split(/\r?\n/);
 
       const combinedLines = [...beforeLines, ...replaceLines, ...afterLines];
       content = combinedLines.join('\n');
