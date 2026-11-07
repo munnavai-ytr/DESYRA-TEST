@@ -92,6 +92,23 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
       });
   }, [project.id]);
 
+  // Initial provider load on mount
+  useEffect(() => {
+    let isMounted = true;
+    listProviders().then((allProviders) => {
+      if (!isMounted) return;
+      setProviders(allProviders);
+      if (allProviders.length > 0) {
+        const def = allProviders.find((p) => p.isDefault) || allProviders[0];
+        setActiveProvider(def);
+        setActiveModel(def.defaultModel || null);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const fileRevision = useProjectFileRevision(project.id);
 
   // Sync files whenever project files change (from AI generation, manual edits, or undo)
@@ -114,11 +131,17 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
           return null;
         }
 
-        // If file is already selected, refresh its content from the loaded files
+        // If file is already selected, refresh its content only if it actually changed
         if (currentSelected) {
           const matching = files.find((f) => f.path === currentSelected.path);
           if (matching) {
-            return matching;
+            if (
+              matching.content !== currentSelected.content ||
+              matching.updatedAt !== currentSelected.updatedAt ||
+              matching.path !== currentSelected.path
+            ) {
+              return matching;
+            }
           }
         }
         return currentSelected;

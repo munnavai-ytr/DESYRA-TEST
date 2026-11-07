@@ -1,6 +1,6 @@
 'use client';
 
-import { useSyncExternalStore } from 'react';
+import { useSyncExternalStore, useCallback } from 'react';
 
 type Listener = () => void;
 
@@ -9,6 +9,8 @@ interface WritingEntry {
   path: string;
   content: string;
 }
+
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
 class AiFileStore {
   private writingFiles = new Map<string, WritingEntry>();
@@ -80,27 +82,29 @@ class AiFileStore {
   }
 
   markChanged(projectId: string, path: string) {
-    let set = this.latestChanged.get(projectId);
-    if (!set) {
-      set = new Set();
-      this.latestChanged.set(projectId, set);
+    const current = this.latestChanged.get(projectId) || (EMPTY_SET as Set<string>);
+    if (!current.has(path)) {
+      const next = new Set(current);
+      next.add(path);
+      this.latestChanged.set(projectId, next);
+      this.emitChange();
     }
-    set.add(path);
-    this.emitChange();
   }
 
   clearChanged(projectId: string, path: string) {
-    const set = this.latestChanged.get(projectId);
-    if (set && set.has(path)) {
-      set.delete(path);
+    const current = this.latestChanged.get(projectId);
+    if (current && current.has(path)) {
+      const next = new Set(current);
+      next.delete(path);
+      this.latestChanged.set(projectId, next.size > 0 ? next : (EMPTY_SET as Set<string>));
       this.emitChange();
     }
   }
 
   clearAllChanged(projectId: string) {
-    const set = this.latestChanged.get(projectId);
-    if (set && set.size > 0) {
-      set.clear();
+    const current = this.latestChanged.get(projectId);
+    if (current && current.size > 0) {
+      this.latestChanged.set(projectId, EMPTY_SET as Set<string>);
       this.emitChange();
     }
   }
@@ -121,49 +125,61 @@ class AiFileStore {
   }
 
   getLatestChangedSet(projectId: string): Set<string> {
-    return this.latestChanged.get(projectId) || new Set();
+    return this.latestChanged.get(projectId) || (EMPTY_SET as Set<string>);
   }
-
-  getSnapshot = () => {
-    // Version token for useSyncExternalStore
-    return Array.from(this.writingFiles.keys()).join(',') +
-      '|' +
-      Array.from(this.revisions.entries()).map(([k, v]) => `${k}:${v}`).join(',') +
-      '|' +
-      Array.from(this.latestChanged.entries()).map(([k, set]) => `${k}:${Array.from(set).join(';')}`).join(',');
-  };
 }
 
 export const aiFileStore = new AiFileStore();
 
+const getServerSnapshotFalse = () => false;
+const getServerSnapshotNull = () => null;
+const getServerSnapshotEmptySet = () => EMPTY_SET as Set<string>;
+const getServerSnapshotZero = () => 0;
+
 export function useIsWritingFile(projectId: string, path?: string | null): boolean {
+  const getSnapshot = useCallback(
+    () => (path ? aiFileStore.isWriting(projectId, path) : false),
+    [projectId, path]
+  );
   return useSyncExternalStore(
     aiFileStore.subscribe,
-    () => (path ? aiFileStore.isWriting(projectId, path) : false),
-    () => false
+    getSnapshot,
+    getServerSnapshotFalse
   );
 }
 
 export function useWritingContent(projectId: string, path?: string | null): string | null {
+  const getSnapshot = useCallback(
+    () => (path ? aiFileStore.getWritingContent(projectId, path) : null),
+    [projectId, path]
+  );
   return useSyncExternalStore(
     aiFileStore.subscribe,
-    () => (path ? aiFileStore.getWritingContent(projectId, path) : null),
-    () => null
+    getSnapshot,
+    getServerSnapshotNull
   );
 }
 
 export function useLatestChangedFiles(projectId: string): Set<string> {
+  const getSnapshot = useCallback(
+    () => aiFileStore.getLatestChangedSet(projectId),
+    [projectId]
+  );
   return useSyncExternalStore(
     aiFileStore.subscribe,
-    () => aiFileStore.getLatestChangedSet(projectId),
-    () => new Set<string>()
+    getSnapshot,
+    getServerSnapshotEmptySet
   );
 }
 
 export function useProjectFileRevision(projectId: string): number {
+  const getSnapshot = useCallback(
+    () => aiFileStore.getRevision(projectId),
+    [projectId]
+  );
   return useSyncExternalStore(
     aiFileStore.subscribe,
-    () => aiFileStore.getRevision(projectId),
-    () => 0
+    getSnapshot,
+    getServerSnapshotZero
   );
 }
