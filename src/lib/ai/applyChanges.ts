@@ -126,7 +126,7 @@ export function createChangeApplierSession(projectId: string): ChangeApplierSess
   const incompleteFilesSet = new Set<string>();
   const failedEdits: Array<{ path: string; reason: string }> = [];
 
-  // Throttled buffer flush to IndexedDB (~300ms)
+  // Throttled buffer flush to IndexedDB (at most once per 1000ms)
   async function flushBuffer(path: string, isFinal = false) {
     const text = fileBuffers.get(path);
     if (text === undefined) return;
@@ -148,8 +148,9 @@ export function createChangeApplierSession(projectId: string): ChangeApplierSess
     const timer = setTimeout(async () => {
       flushTimers.delete(path);
       await flushBuffer(path, false);
-      aiFileStore.bumpRevision(projectId);
-    }, 300);
+      // Fix 4: Do NOT bump revision during intermediate flushes;
+      // bumpRevision only fires when file set changes (create/delete/rename) or file finishes
+    }, 1000);
     flushTimers.set(path, timer);
   }
 

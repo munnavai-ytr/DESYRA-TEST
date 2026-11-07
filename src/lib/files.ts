@@ -74,6 +74,43 @@ export function validateFilePath(
   return { valid: true, normalizedPath: trimmed };
 }
 
+export interface ProjectFileMeta {
+  id: string;
+  projectId: string;
+  path: string;
+  size: number;
+  updatedAt: number;
+}
+
+/**
+ * Lists all file metadata for a project (without loading full content into memory), sorted by path.
+ */
+export async function listFileMetas(projectId: string): Promise<ProjectFileMeta[]> {
+  const db = getDb();
+  if (!db || !projectId) return [];
+
+  try {
+    const metas: ProjectFileMeta[] = [];
+    await db.files
+      .where('projectId')
+      .equals(projectId)
+      .each((f) => {
+        metas.push({
+          id: f.id,
+          projectId: f.projectId,
+          path: f.path,
+          size: typeof f.content === 'string' ? new Blob([f.content]).size : 0,
+          updatedAt: f.updatedAt,
+        });
+      });
+    metas.sort((a, b) => a.path.localeCompare(b.path));
+    return metas;
+  } catch (error) {
+    console.error(`[DESYRA Files] Failed to list file metas for project ${projectId}:`, error);
+    return [];
+  }
+}
+
 /**
  * Lists all files for a project, sorted by path.
  */
@@ -260,14 +297,14 @@ export interface TreeNode {
   path: string;
   isFolder: boolean;
   children?: TreeNode[];
-  file?: ProjectFile;
+  file?: ProjectFile | ProjectFileMeta;
 }
 
 /**
- * Converts a flat array of ProjectFiles into a nested Tree hierarchy.
+ * Converts a flat array of ProjectFiles or ProjectFileMetas into a nested Tree hierarchy.
  * Folders first, sorted alphabetically.
  */
-export function buildFileTree(files: ProjectFile[]): TreeNode[] {
+export function buildFileTree(files: Array<ProjectFile | ProjectFileMeta>): TreeNode[] {
   const rootNodes: TreeNode[] = [];
 
   for (const file of files) {

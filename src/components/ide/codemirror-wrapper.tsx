@@ -117,14 +117,48 @@ const desyraTheme = EditorView.theme(
   { dark: true }
 );
 
+export interface CodeMirrorWrapperProps {
+  value: string;
+  onChange?: (val: string) => void;
+  onBlur?: () => void;
+  readOnly?: boolean;
+  filePath: string;
+  onAppendChunkRef?: React.MutableRefObject<((chunk: string) => void) | null>;
+}
+
 export function CodeMirrorWrapper({
   value,
   onChange,
   onBlur,
   readOnly = false,
   filePath,
+  onAppendChunkRef,
 }: CodeMirrorWrapperProps) {
+  const viewRef = React.useRef<EditorView | null>(null);
   const langExtension = useMemo(() => getLanguageExtension(filePath), [filePath]);
+
+  React.useEffect(() => {
+    if (onAppendChunkRef) {
+      onAppendChunkRef.current = (chunk: string) => {
+        const view = viewRef.current;
+        if (!view || !chunk) return;
+        const len = view.state.doc.length;
+        const scrollEl = view.scrollDOM;
+        const isNearBottom =
+          scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= 60;
+
+        view.dispatch({
+          changes: { from: len, insert: chunk },
+          effects: isNearBottom ? EditorView.scrollIntoView(len + chunk.length) : undefined,
+        });
+      };
+    }
+    return () => {
+      if (onAppendChunkRef) {
+        onAppendChunkRef.current = null;
+      }
+    };
+  }, [onAppendChunkRef]);
 
   const extensions = useMemo(() => {
     return [
@@ -145,6 +179,9 @@ export function CodeMirrorWrapper({
         readOnly={readOnly}
         onChange={onChange}
         onBlur={onBlur}
+        onCreateEditor={(view) => {
+          viewRef.current = view;
+        }}
         basicSetup={{
           lineNumbers: true,
           highlightActiveLineGutter: true,

@@ -539,6 +539,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
                     projectId={project.id}
                     file={selectedFile}
                     onFileUpdated={(updated) => setSelectedFile(updated)}
+                    isVisible={workspaceTab === 'code'}
                   />
                 )}
               </div>
@@ -600,6 +601,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               projectId={project.id}
               file={selectedFile}
               onFileUpdated={(updated) => setSelectedFile(updated)}
+              isVisible={mobileTab === 'code'}
             />
           </div>
         </div>

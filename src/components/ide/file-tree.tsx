@@ -27,20 +27,23 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Tooltip } from '@/components/ui/tooltip';
 import { useToast } from '@/components/ui/toast';
 import {
-  listFiles,
+  listFileMetas,
   createFile,
   renameFile,
   deleteFile,
   deleteFolder,
   validateFilePath,
   buildFileTree,
+  getFile,
   type TreeNode,
+  type ProjectFileMeta,
 } from '@/lib/files';
 import type { ProjectFile } from '@/lib/db';
 import {
   aiFileStore,
   useProjectFileRevision,
   useLatestChangedFiles,
+  useIsWritingFile,
 } from '@/lib/ai/aiFileStore';
 
 export interface FileTreeProps {
@@ -87,12 +90,12 @@ interface TreeRowProps {
   isSelected: boolean;
   isFocused: boolean;
   isExpanded: boolean;
-  isWriting: boolean;
   isChanged: boolean;
+  projectId: string;
   onSelectNode: (node: TreeNode) => void;
   onFocusNode: (path: string) => void;
-  onOpenRename: (file: ProjectFile) => void;
-  onOpenDeleteFile: (file: ProjectFile) => void;
+  onOpenRename: (file: ProjectFile | ProjectFileMeta) => void;
+  onOpenDeleteFile: (file: ProjectFile | ProjectFileMeta) => void;
   onOpenDeleteFolder: (path: string, count: number) => void;
   fileCountInFolder: (path: string) => number;
 }
@@ -103,8 +106,8 @@ const TreeRow = React.memo(function TreeRow({
   isSelected,
   isFocused,
   isExpanded,
-  isWriting,
   isChanged,
+  projectId,
   onSelectNode,
   onFocusNode,
   onOpenRename,
@@ -113,6 +116,7 @@ const TreeRow = React.memo(function TreeRow({
   fileCountInFolder,
 }: TreeRowProps) {
   const isFolder = node.isFolder;
+  const isWriting = useIsWritingFile(projectId, isFolder ? null : node.path);
 
   return (
     <div
@@ -230,7 +234,7 @@ export function FileTree({
 }: FileTreeProps) {
   const { toast } = useToast();
 
-  const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [files, setFiles] = useState<ProjectFileMeta[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
     () => new Set(['src', 'components', 'lib', 'app', 'public', 'styles', 'js', 'css'])
@@ -241,11 +245,11 @@ export function FileTree({
   const [newFilePath, setNewFilePath] = useState('');
   const [newFileError, setNewFileError] = useState<string | null>(null);
 
-  const [fileToRename, setFileToRename] = useState<ProjectFile | null>(null);
+  const [fileToRename, setFileToRename] = useState<ProjectFile | ProjectFileMeta | null>(null);
   const [renamePath, setRenamePath] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
 
-  const [fileToDelete, setFileToDelete] = useState<ProjectFile | null>(null);
+  const [fileToDelete, setFileToDelete] = useState<ProjectFile | ProjectFileMeta | null>(null);
   const [folderToDelete, setFolderToDelete] = useState<{ path: string; count: number } | null>(
     null
   );
@@ -257,10 +261,10 @@ export function FileTree({
   const fileRevision = useProjectFileRevision(projectId);
   const latestChangedSet = useLatestChangedFiles(projectId);
 
-  // Load files
+  // Load lightweight file metas without full content
   const refreshFiles = useCallback(async () => {
     try {
-      const list = await listFiles(projectId);
+      const list = await listFileMetas(projectId);
       setFiles(list);
       return list;
     } catch (err) {
@@ -274,7 +278,7 @@ export function FileTree({
   // Sync files whenever projectId or fileRevision changes
   useEffect(() => {
     let ignore = false;
-    listFiles(projectId)
+    listFileMetas(projectId)
       .then((list) => {
         if (!ignore) {
           setFiles(list);
@@ -291,8 +295,10 @@ export function FileTree({
     };
   }, [projectId, fileRevision]);
 
-  // Build tree hierarchy
-  const treeNodes = useMemo(() => buildFileTree(files), [files]);
+  // Fix 4: Don't rebuild tree hierarchy unless file paths set actually changed
+  const pathsKey = useMemo(() => files.map((f) => f.path).join(':'), [files]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const treeNodes = useMemo(() => buildFileTree(files), [pathsKey]);
 
   // List of all file paths for duplicate checking
   const allPaths = useMemo(() => files.map((f) => f.path), [files]);
@@ -325,12 +331,15 @@ export function FileTree({
   }, []);
 
   const handleSelectNode = useCallback(
-    (node: TreeNode) => {
+    async (node: TreeNode) => {
       if (node.isFolder) {
         toggleFolder(node.path);
       } else if (node.file) {
         aiFileStore.clearChanged(projectId, node.file.path);
-        onSelectFile(node.file);
+        const fullFile = await getFile(projectId, node.file.path);
+        if (fullFile) {
+          onSelectFile(fullFile);
+        }
       }
     },
     [projectId, toggleFolder, onSelectFile]
@@ -446,10 +455,12 @@ export function FileTree({
         message: `Renamed to "${validation.normalizedPath}".`,
       });
 
-      const updatedList = await refreshFiles();
-      const renamed = updatedList.find((f) => f.path === validation.normalizedPath);
-      if (renamed && selectedFilePath === fileToRename.path) {
-        onSelectFile(renamed);
+      await refreshFiles();
+      if (selectedFilePath === fileToRename.path) {
+        const fullRenamed = await getFile(projectId, validation.normalizedPath!);
+        if (fullRenamed) {
+          onSelectFile(fullRenamed);
+        }
       }
 
       setFileToRename(null);
@@ -514,7 +525,6 @@ export function FileTree({
       const isExpanded = expandedFolders.has(node.path);
       const isSelected = !isFolder && selectedFilePath === node.path;
       const isFocused = focusedPath === node.path;
-      const isWriting = !isFolder && node.file ? aiFileStore.isWriting(projectId, node.file.path) : false;
       const isChanged = !isFolder && node.file ? latestChangedSet.has(node.file.path) : false;
 
       return (
@@ -525,8 +535,8 @@ export function FileTree({
             isSelected={isSelected}
             isFocused={isFocused}
             isExpanded={isExpanded}
-            isWriting={isWriting}
             isChanged={isChanged}
+            projectId={projectId}
             onSelectNode={handleSelectNode}
             onFocusNode={setFocusedPath}
             onOpenRename={setFileToRename}

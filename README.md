@@ -173,4 +173,39 @@ Prose outside protocol tags is rendered as Markdown in chat. Protocol tags and f
    - Capped at 1 MB per message to prevent storage exhaustion.
    - Clicking **"Undo changes"** verifies that the current disk content still matches the message's `after` state, restores the `before` version, or skips already-modified files with a descriptive toast explanation.
 
+## Streaming Performance Notes (Push 5.1 Optimization)
+
+In Push 5.1, the streaming execution pipeline was re-architected to be strictly O(new data) rather than O(total message length), eliminating UI lag, stutter, and unresponsive taps on mobile devices:
+
+1. **Ref-Based Raw Stream Storage**:
+   - The accumulating raw message stream is kept in a mutable `useRef`, not in React state.
+   - React state only holds small, lightweight presentation data: prose text outside tags, and a compact list of operation cards `[{ path, op, status, lineCount }]`.
+   - File bodies are never stored in chat React state or re-tokenized during streaming.
+
+2. **Throttled UI Flushes & Provider Chunk Coalescing**:
+   - Provider chunks arriving closer than 50ms apart are coalesced in a buffer before reaching the protocol parser.
+   - UI state updates are throttled to at most once per 120ms using a combined timer and `requestAnimationFrame`.
+   - All streaming UI updates are wrapped in `React.startTransition` so user interactions (scrolling, taps, tab switches) maintain priority.
+
+3. **Incremental Line Counting & Linear Scanning**:
+   - Line counts for streaming files are calculated incrementally by counting `\n` characters directly in new chunk slices via `countNewlines`, avoiding `split('\n')` array allocations.
+   - The protocol parser operates in linear time over 1 MB+ streams without backtracking or quadratic buffer growth.
+
+4. **Memoized Streaming Prose Blocks**:
+   - Completed Markdown prose paragraphs are split and memoized with `React.memo`.
+   - Only the active, still-growing paragraph block re-renders as new tokens arrive.
+
+5. **CodeMirror Transaction-Based Incremental Appending**:
+   - When the Code tab is visible and the active file is being streamed, CodeMirror receives incremental text appends via `view.dispatch({ changes: { from: doc.length, insert: chunk } })`, throttled to <= 250ms.
+   - Full document re-parsing is avoided; if the Code tab is hidden, streaming events are ignored and the complete document is loaded upon opening.
+
+6. **Lightweight File Explorer Metadata**:
+   - The file explorer queries `listFileMetas()` which omits full file bodies from memory.
+   - In-progress writes to IndexedDB are throttled to 1000ms (with final flush at `fileEnd`).
+   - Revision bumps only trigger when the project's file structure (paths) changes, preventing unnecessary tree re-renders.
+
+7. **Defensive HTML-to-Markdown Converter**:
+   - Stray HTML tags output by models in explanations are converted into clean Markdown before rendering, while preserving code inside markdown fences.
+
+
 

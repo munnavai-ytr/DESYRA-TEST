@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, startTransition } from 'react';
 import Link from 'next/link';
 import {
   Send,
@@ -30,13 +30,11 @@ import {
   updateProject,
   type StoredMessage,
   type Project,
-  type FileUndoEntry,
-  type ProjectFile,
 } from '@/lib/db';
-import { listFiles, getFile } from '@/lib/files';
+import { listFiles } from '@/lib/files';
 import { streamChat, type ProviderError } from '@/lib/ai';
 import { buildAiChatContext } from '@/lib/ai/context';
-import { createStreamingProtocolParser } from '@/lib/ai/fileProtocol';
+import { createStreamingProtocolParser, countNewlines } from '@/lib/ai/fileProtocol';
 import {
   createChangeApplierSession,
   executeUndoForMessage,
@@ -44,6 +42,8 @@ import {
 import { aiFileStore } from '@/lib/ai/aiFileStore';
 import { formatRelativeTime } from '@/lib/utils';
 import { ParsedMessageRenderer } from '@/components/chat/parsed-message-renderer';
+import { FileOperationCard, type FileOpStatus } from '@/components/chat/file-operation-card';
+import { MarkdownRenderer } from '@/components/chat/markdown-renderer';
 
 export interface ChatPaneProps {
   project: Project;
@@ -61,85 +61,205 @@ interface MessageItemProps {
   onUndo?: (message: StoredMessage) => void;
 }
 
-const MessageItem = React.memo(function MessageItem({
-  message,
-  onOpenFile,
-  onRetryEdit,
-  onUndo,
-}: MessageItemProps) {
-  const isUser = message.role === 'user';
+// Fix 1: Memoize MessageItem so stored messages never re-render during streaming
+const MessageItem = React.memo(
+  function MessageItem({
+    message,
+    onOpenFile,
+    onRetryEdit,
+    onUndo,
+  }: MessageItemProps) {
+    const isUser = message.role === 'user';
 
-  if (isUser) {
-    return (
-      <div className="flex justify-end w-full group">
-        <div className="max-w-[85%] flex flex-col items-end">
-          <div className="bg-[var(--elevated)] border border-[#303038] text-[var(--text)] rounded-[16px] rounded-br-[4px] px-3.5 py-2.5 text-[15px] sm:text-[14.5px] leading-[1.6] whitespace-pre-wrap [overflow-wrap:anywhere] select-text shadow-xs">
-            {message.content}
-          </div>
-          <span className="text-[10px] text-[var(--disabled)] mt-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity text-right select-none">
-            {formatRelativeTime(message.createdAt)}
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  const hasUndo = Boolean(message.undoEntries && message.undoEntries.length > 0);
-  const undoDisabled = message.undoDisabledReason;
-
-  return (
-    <div className="w-full flex flex-col text-left group">
-      {/* Header bar with brand, model, and per-message undo */}
-      <div className="flex items-center justify-between mb-1 select-none">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
-          {message.model && (
-            <span className="text-[10px] text-[var(--disabled)] font-mono">
-              · {message.model}
+    if (isUser) {
+      return (
+        <div className="flex justify-end w-full group">
+          <div className="max-w-[85%] flex flex-col items-end">
+            <div className="bg-[var(--elevated)] border border-[#303038] text-[var(--text)] rounded-[16px] rounded-br-[4px] px-3.5 py-2.5 text-[15px] sm:text-[14.5px] leading-[1.6] whitespace-pre-wrap [overflow-wrap:anywhere] select-text shadow-xs">
+              {message.content}
+            </div>
+            <span className="text-[10px] text-[var(--disabled)] mt-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity text-right select-none">
+              {formatRelativeTime(message.createdAt)}
             </span>
+          </div>
+        </div>
+      );
+    }
+
+    const hasUndo = Boolean(message.undoEntries && message.undoEntries.length > 0);
+    const undoDisabled = message.undoDisabledReason;
+
+    return (
+      <div className="w-full flex flex-col text-left group">
+        {/* Header bar with brand, model, and per-message undo */}
+        <div className="flex items-center justify-between mb-1 select-none">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
+            {message.model && (
+              <span className="text-[10px] text-[var(--disabled)] font-mono">
+                · {message.model}
+              </span>
+            )}
+          </div>
+
+          {/* Per-message Undo safety net */}
+          {hasUndo && onUndo && (
+            <button
+              type="button"
+              onClick={() => onUndo(message)}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-[var(--radius-sm)] border border-[var(--border)] hover:border-[#3a3a44] bg-[var(--surface)] hover:bg-[var(--elevated)] text-[10px] font-medium text-[var(--muted)] hover:text-[var(--text)] transition-all cursor-pointer shadow-xs active:scale-95"
+              title="Undo file changes made by this message"
+            >
+              <RotateCcw className="w-3 h-3 text-[var(--accent)]" />
+              <span>Undo changes</span>
+            </button>
+          )}
+
+          {undoDisabled && (
+            <Tooltip content={undoDisabled} position="left">
+              <span className="text-[10px] text-[var(--disabled)] italic cursor-help">
+                Undo unavailable
+              </span>
+            </Tooltip>
           )}
         </div>
 
-        {/* Per-message Undo safety net */}
-        {hasUndo && onUndo && (
-          <button
-            type="button"
-            onClick={() => onUndo(message)}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-[var(--radius-sm)] border border-[var(--border)] hover:border-[#3a3a44] bg-[var(--surface)] hover:bg-[var(--elevated)] text-[10px] font-medium text-[var(--muted)] hover:text-[var(--text)] transition-all cursor-pointer shadow-xs active:scale-95"
-            title="Undo file changes made by this message"
-          >
-            <RotateCcw className="w-3 h-3 text-[var(--accent)]" />
-            <span>Undo changes</span>
-          </button>
-        )}
+        {/* Render Markdown prose + compact File Cards */}
+        <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
+          <ParsedMessageRenderer
+            content={message.content}
+            undoEntries={message.undoEntries}
+            incompleteFiles={message.incompleteFiles}
+            failedEdits={message.failedEdits}
+            onOpenFile={onOpenFile}
+            onRetryEdit={onRetryEdit}
+          />
+        </div>
 
-        {undoDisabled && (
-          <Tooltip content={undoDisabled} position="left">
-            <span className="text-[10px] text-[var(--disabled)] italic cursor-help">
-              Undo unavailable
-            </span>
-          </Tooltip>
-        )}
+        <span className="text-[10px] text-[var(--disabled)] mt-1.5 px-0.5 opacity-0 group-hover:opacity-100 transition-opacity select-none">
+          {formatRelativeTime(message.createdAt)}
+        </span>
       </div>
+    );
+  },
+  (prev, next) =>
+    prev.message.id === next.message.id &&
+    prev.message.content === next.message.content &&
+    prev.message.undoEntries === next.message.undoEntries
+);
 
-      {/* Render Markdown prose + compact File Cards */}
-      <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
-        <ParsedMessageRenderer
-          content={message.content}
-          undoEntries={message.undoEntries}
-          incompleteFiles={message.incompleteFiles}
-          failedEdits={message.failedEdits}
-          onOpenFile={onOpenFile}
-          onRetryEdit={onRetryEdit}
-        />
-      </div>
+export interface StreamingFileOperation {
+  path: string;
+  op: 'file' | 'edit' | 'delete';
+  status: FileOpStatus;
+  lineCount?: number;
+  errorReason?: string;
+}
 
-      <span className="text-[10px] text-[var(--disabled)] mt-1.5 px-0.5 opacity-0 group-hover:opacity-100 transition-opacity select-none">
-        {formatRelativeTime(message.createdAt)}
-      </span>
+interface StreamingUiState {
+  prose: string;
+  operations: StreamingFileOperation[];
+}
+
+/**
+ * Fix 1: Memoized prose block component.
+ * Completed blocks are frozen; only the last active growing block re-renders.
+ */
+interface ProseBlockProps {
+  blockText: string;
+  isComplete: boolean;
+}
+
+const MemoizedProseBlock = React.memo(
+  function MemoizedProseBlock({ blockText }: ProseBlockProps) {
+    return <MarkdownRenderer content={blockText} isStreaming={true} />;
+  },
+  (prev, next) => prev.blockText === next.blockText && prev.isComplete === next.isComplete
+);
+
+function splitProseIntoBlocks(prose: string): { completedBlocks: string[]; growingBlock: string } {
+  if (!prose) return { completedBlocks: [], growingBlock: '' };
+
+  // Check if an unclosed code block fence exists
+  const fenceMatches = prose.match(/```/g);
+  const hasUnclosedFence = fenceMatches && fenceMatches.length % 2 === 1;
+
+  if (hasUnclosedFence) {
+    // Find the last opening fence: everything inside and after it is part of the growing block
+    const lastFenceIdx = prose.lastIndexOf('```');
+    const beforeFence = prose.slice(0, lastFenceIdx);
+    const codeBlockAndAfter = prose.slice(lastFenceIdx);
+
+    const rawBlocks = beforeFence.split(/\n\s*\n+/);
+    const completedBlocks = rawBlocks.filter((b) => b.trim().length > 0);
+    return {
+      completedBlocks,
+      growingBlock: codeBlockAndAfter,
+    };
+  }
+
+  const rawBlocks = prose.split(/\n\s*\n+/);
+  if (rawBlocks.length <= 1) {
+    return { completedBlocks: [], growingBlock: rawBlocks[0] || '' };
+  }
+
+  const completedBlocks = rawBlocks.slice(0, -1).filter((b) => b.trim().length > 0);
+  const growingBlock = rawBlocks[rawBlocks.length - 1];
+
+  return { completedBlocks, growingBlock };
+}
+
+function StreamingProseRenderer({ prose }: { prose: string }) {
+  const { completedBlocks, growingBlock } = useMemo(() => splitProseIntoBlocks(prose), [prose]);
+
+  return (
+    <div className="w-full space-y-2">
+      {completedBlocks.map((block, i) => (
+        <MemoizedProseBlock key={`completed-${i}`} blockText={block} isComplete={true} />
+      ))}
+      {growingBlock ? (
+        <MemoizedProseBlock key="active-growing" blockText={growingBlock} isComplete={false} />
+      ) : null}
     </div>
   );
-});
+}
+
+/**
+ * Fix 1: Chunk coalescer for incoming provider chunks.
+ * If chunks arrive faster than 50ms apart, coalesce them before feeding the parser.
+ */
+function createChunkCoalescer(onChunk: (text: string) => void, minDelayMs = 50) {
+  let buffer = '';
+  let lastTime = 0;
+  let timer: NodeJS.Timeout | null = null;
+
+  function flush() {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (buffer) {
+      const toEmit = buffer;
+      buffer = '';
+      lastTime = performance.now();
+      onChunk(toEmit);
+    }
+  }
+
+  return {
+    push(text: string) {
+      buffer += text;
+      const now = performance.now();
+      const elapsed = now - lastTime;
+      if (elapsed >= minDelayMs) {
+        flush();
+      } else if (!timer) {
+        timer = setTimeout(flush, minDelayMs - elapsed);
+      }
+    },
+    flush,
+  };
+}
 
 export function ChatPane({
   project,
@@ -154,9 +274,7 @@ export function ChatPane({
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingText, setStreamingText] = useState('');
-  const [activeStreamingPath, setActiveStreamingPath] = useState<string | null>(null);
-  const [activeStreamingLineCount, setActiveStreamingLineCount] = useState<number>(0);
+  const [streamingUi, setStreamingUi] = useState<StreamingUiState>({ prose: '', operations: [] });
   const [isLocked, setIsLocked] = useState(false);
   const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
   const [lastError, setLastError] = useState<ProviderError | null>(null);
@@ -167,6 +285,17 @@ export function ChatPane({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const isUserScrolledUpRef = useRef(false);
+
+  // Streaming refs (kept out of React state during generation)
+  const rawTextRef = useRef('');
+  const streamingProseRef = useRef('');
+  const operationsRef = useRef<StreamingFileOperation[]>([]);
+  const currentFileLineCountRef = useRef<number>(0);
+
+  // Throttled UI flush controls (at most once every 120ms with timer + rAF)
+  const uiFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const uiFlushRafRef = useRef<number | null>(null);
+  const lastUiFlushTimeRef = useRef<number>(0);
 
   // Load project messages from IndexedDB
   const loadMessages = useCallback(async () => {
@@ -205,6 +334,21 @@ export function ChatPane({
     setIsScrolledUp(scrolledUp);
   };
 
+  // Fix 2: Auto-scroll helper (single rAF, instant behavior 'auto', only near bottom)
+  const triggerAutoScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el || isUserScrolledUpRef.current) return;
+    requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      if (container && !isUserScrolledUpRef.current) {
+        container.scrollTo({
+          top: container.scrollHeight,
+          behavior: 'auto',
+        });
+      }
+    });
+  }, []);
+
   const scrollToBottom = useCallback((smooth = false) => {
     const el = scrollContainerRef.current;
     if (el) {
@@ -215,11 +359,52 @@ export function ChatPane({
     }
   }, []);
 
+  // Scroll on messages change (initial or finished message)
   useEffect(() => {
     if (!isUserScrolledUpRef.current) {
       scrollToBottom(false);
     }
-  }, [messages, streamingText, scrollToBottom]);
+  }, [messages, scrollToBottom]);
+
+  // Schedule throttled UI flush (at most once every 120ms)
+  const scheduleUiFlush = useCallback(() => {
+    if (uiFlushTimerRef.current !== null || uiFlushRafRef.current !== null) return;
+
+    const now = performance.now();
+    const elapsed = now - lastUiFlushTimeRef.current;
+    const delay = Math.max(0, 120 - elapsed);
+
+    uiFlushTimerRef.current = setTimeout(() => {
+      uiFlushTimerRef.current = null;
+      uiFlushRafRef.current = requestAnimationFrame(() => {
+        uiFlushRafRef.current = null;
+        lastUiFlushTimeRef.current = performance.now();
+        startTransition(() => {
+          setStreamingUi({
+            prose: streamingProseRef.current,
+            operations: [...operationsRef.current],
+          });
+        });
+        triggerAutoScroll();
+      });
+    }, delay);
+  }, [triggerAutoScroll]);
+
+  const flushUiNow = useCallback(() => {
+    if (uiFlushTimerRef.current !== null) {
+      clearTimeout(uiFlushTimerRef.current);
+      uiFlushTimerRef.current = null;
+    }
+    if (uiFlushRafRef.current !== null) {
+      cancelAnimationFrame(uiFlushRafRef.current);
+      uiFlushRafRef.current = null;
+    }
+    setStreamingUi({
+      prose: streamingProseRef.current,
+      operations: [...operationsRef.current],
+    });
+    triggerAutoScroll();
+  }, [triggerAutoScroll]);
 
   // Adjust textarea height
   const adjustTextareaHeight = () => {
@@ -350,53 +535,144 @@ export function ChatPane({
       openFilePath,
     });
 
+    // Reset streaming state
     setIsStreaming(true);
-    setStreamingText('');
-    setActiveStreamingPath(null);
-    setActiveStreamingLineCount(0);
+    rawTextRef.current = '';
+    streamingProseRef.current = '';
+    operationsRef.current = [];
+    currentFileLineCountRef.current = 0;
+    setStreamingUi({ prose: '', operations: [] });
     isUserScrolledUpRef.current = false;
     setIsScrolledUp(false);
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    let accumulatedRawText = '';
     const assistantMsgId = `msg_${Date.now()}_a`;
 
     // Initialize change applier session for this turn
     const session = createChangeApplierSession(project.id);
 
-    // Initialize streaming protocol parser
+    // Protocol parser callback
     const protocolParser = createStreamingProtocolParser(async (event) => {
       switch (event.type) {
-        case 'fileStart':
-          setActiveStreamingPath(event.path);
-          setActiveStreamingLineCount(1);
+        case 'text':
+          streamingProseRef.current += event.text;
+          scheduleUiFlush();
+          break;
+
+        case 'fileStart': {
+          currentFileLineCountRef.current = 1;
+          const existingOpIdx = operationsRef.current.findIndex(
+            (o) => o.path === event.path && o.op === 'file'
+          );
+          if (existingOpIdx >= 0) {
+            operationsRef.current[existingOpIdx] = {
+              path: event.path,
+              op: 'file',
+              status: 'writing',
+              lineCount: 1,
+            };
+          } else {
+            operationsRef.current.push({
+              path: event.path,
+              op: 'file',
+              status: 'writing',
+              lineCount: 1,
+            });
+          }
+          scheduleUiFlush();
           await session.onFileStart(event.path);
           break;
-        case 'fileChunk':
+        }
+
+        case 'fileChunk': {
           session.onFileChunk(event.path, event.text);
-          setActiveStreamingLineCount((prev) => prev + (event.text.split('\n').length - 1));
+          // Fix 1: Incremental line counter (counting '\n' without split)
+          currentFileLineCountRef.current += countNewlines(event.text);
+          const op = operationsRef.current.find((o) => o.path === event.path && o.op === 'file');
+          if (op) {
+            op.lineCount = currentFileLineCountRef.current;
+          }
+          scheduleUiFlush();
           break;
-        case 'fileEnd':
-          setActiveStreamingPath(null);
+        }
+
+        case 'fileEnd': {
+          const op = operationsRef.current.find((o) => o.path === event.path && o.op === 'file');
+          if (op) {
+            op.status = 'created';
+          }
+          scheduleUiFlush();
           await session.onFileEnd(event.path);
           break;
-        case 'editStart':
-          setActiveStreamingPath(event.path);
+        }
+
+        case 'editStart': {
+          const existingOpIdx = operationsRef.current.findIndex(
+            (o) => o.path === event.path && o.op === 'edit'
+          );
+          if (existingOpIdx >= 0) {
+            operationsRef.current[existingOpIdx] = {
+              path: event.path,
+              op: 'edit',
+              status: 'writing',
+            };
+          } else {
+            operationsRef.current.push({
+              path: event.path,
+              op: 'edit',
+              status: 'writing',
+            });
+          }
+          scheduleUiFlush();
           break;
-        case 'editEnd':
-          setActiveStreamingPath(null);
-          await session.onEdit(event.path, event.blocks);
+        }
+
+        case 'editEnd': {
+          const op = operationsRef.current.find((o) => o.path === event.path && o.op === 'edit');
+          if (op) {
+            op.status = 'updated';
+          }
+          scheduleUiFlush();
+          const result = await session.onEdit(event.path, event.blocks);
+          if (!result.success && op) {
+            op.status = 'failed';
+            op.errorReason = result.error;
+            scheduleUiFlush();
+          }
           break;
-        case 'delete':
+        }
+
+        case 'delete': {
+          operationsRef.current.push({
+            path: event.path,
+            op: 'delete',
+            status: 'deleted',
+          });
+          scheduleUiFlush();
           await session.onDelete(event.path);
           break;
-        case 'unterminated':
+        }
+
+        case 'unterminated': {
+          const op = operationsRef.current.find(
+            (o) => o.path === event.path && o.op === event.tagType
+          );
+          if (op) {
+            op.status = 'incomplete';
+          }
+          scheduleUiFlush();
           session.onUnterminated(event.tagType, event.path);
           break;
+        }
       }
     });
+
+    // Fix 1: Coalesce provider chunks arriving faster than 50ms apart
+    const coalescer = createChunkCoalescer((chunkText) => {
+      protocolParser.feed(chunkText);
+    }, 50);
 
     try {
       const stream = streamChat({
@@ -408,21 +684,22 @@ export function ChatPane({
 
       for await (const chunk of stream) {
         if (chunk.text) {
-          accumulatedRawText += chunk.text;
-          setStreamingText(accumulatedRawText);
-          protocolParser.feed(chunk.text);
+          rawTextRef.current += chunk.text;
+          coalescer.push(chunk.text);
         }
       }
 
+      coalescer.flush();
       protocolParser.end();
       const sessionResult = await session.finish();
+      flushUiNow();
 
-      if (accumulatedRawText) {
+      if (rawTextRef.current) {
         const assistantMessage: StoredMessage = {
           id: assistantMsgId,
           projectId: project.id,
           role: 'assistant',
-          content: accumulatedRawText,
+          content: rawTextRef.current,
           createdAt: Date.now(),
           model: activeModel,
           provider: activeProvider.label,
@@ -435,18 +712,20 @@ export function ChatPane({
         setMessages((prev) => [...prev, assistantMessage]);
       }
     } catch (err: unknown) {
+      coalescer.flush();
       protocolParser.end();
       const sessionResult = await session.finish();
+      flushUiNow();
       const errorMsg = err instanceof Error ? err.message : String(err);
 
       if (abortController.signal.aborted) {
         // Saved stopped text
-        if (accumulatedRawText) {
+        if (rawTextRef.current) {
           const partialMessage: StoredMessage = {
             id: assistantMsgId,
             projectId: project.id,
             role: 'assistant',
-            content: accumulatedRawText,
+            content: rawTextRef.current,
             createdAt: Date.now(),
             model: activeModel,
             provider: activeProvider.label,
@@ -484,9 +763,10 @@ export function ChatPane({
       }
     } finally {
       setIsStreaming(false);
-      setStreamingText('');
-      setActiveStreamingPath(null);
-      setActiveStreamingLineCount(0);
+      setStreamingUi({ prose: '', operations: [] });
+      rawTextRef.current = '';
+      streamingProseRef.current = '';
+      operationsRef.current = [];
       abortControllerRef.current = null;
     }
   };
@@ -602,7 +882,7 @@ export function ChatPane({
                     action={
                       <Link href="/settings">
                         <Button variant="primary" size="sm">
-                          Configure in Settings
+                           Configure in Settings
                         </Button>
                       </Link>
                     }
@@ -641,7 +921,7 @@ export function ChatPane({
             </div>
           )}
 
-          {/* Render Saved Messages */}
+          {/* Render Saved Messages (memoized per message item) */}
           {messages.map((m) => (
             <MessageItem
               key={m.id}
@@ -652,7 +932,7 @@ export function ChatPane({
             />
           ))}
 
-          {/* Active Streaming Message */}
+          {/* Fix 1: Active Streaming Message - renders lightweight prose blocks + operation cards without raw file content */}
           {isStreaming && (
             <div className="w-full flex flex-col text-left animate-in fade-in duration-100">
               <div className="flex items-center gap-1.5 mb-1 select-none">
@@ -660,17 +940,27 @@ export function ChatPane({
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
               </div>
               <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
-                {streamingText ? (
-                  <ParsedMessageRenderer
-                    content={streamingText}
-                    isStreaming={true}
-                    activeStreamingPath={activeStreamingPath}
-                    activeStreamingLineCount={activeStreamingLineCount}
-                    onOpenFile={onOpenFile}
-                    onRetryEdit={handleRetryFailedEdit}
-                  />
-                ) : (
+                {streamingUi.prose ? (
+                  <StreamingProseRenderer prose={streamingUi.prose} />
+                ) : streamingUi.operations.length === 0 ? (
                   <span className="text-[var(--disabled)] italic text-sm">Thinking...</span>
+                ) : null}
+
+                {streamingUi.operations.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {streamingUi.operations.map((op, idx) => (
+                      <FileOperationCard
+                        key={`stream-op-${op.path}-${idx}`}
+                        op={op.op}
+                        path={op.path}
+                        status={op.status}
+                        lineCount={op.lineCount}
+                        errorReason={op.errorReason}
+                        onOpenFile={onOpenFile}
+                        onRetry={handleRetryFailedEdit}
+                      />
+                    ))}
+                  </div>
                 )}
                 <span className="inline-block w-1.5 h-3.5 ml-1 bg-[var(--accent)] animate-pulse align-middle" />
               </div>

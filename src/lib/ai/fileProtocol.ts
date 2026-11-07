@@ -83,6 +83,19 @@ export function stripProtocolNewlines(text: string): string {
 }
 
 /**
+ * Incrementally counts newline characters ('\n') in text without allocating arrays.
+ */
+export function countNewlines(text: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
  * Creates an incremental streaming parser.
  */
 export function createStreamingProtocolParser(
@@ -129,18 +142,32 @@ export function createStreamingProtocolParser(
           return;
         } else {
           // Not a desyra tag (e.g. '<div>', '<p', '<span')
-          onEvent({ type: 'text', text: buffer.slice(0, 1) });
-          buffer = buffer.slice(1);
-          continue;
+          const nextTag = buffer.indexOf('<', 1);
+          if (nextTag === -1) {
+            onEvent({ type: 'text', text: buffer });
+            buffer = '';
+            return;
+          } else {
+            onEvent({ type: 'text', text: buffer.slice(0, nextTag) });
+            buffer = buffer.slice(nextTag);
+            continue;
+          }
         }
       }
 
       // Buffer has at least '<desyra-'. Does it actually start with '<desyra-'?
       if (!buffer.startsWith(DESYRA_PREFIX)) {
-        // Not a desyra tag, emit '<' and continue
-        onEvent({ type: 'text', text: buffer.slice(0, 1) });
-        buffer = buffer.slice(1);
-        continue;
+        // Not a desyra tag, jump to next '<'
+        const nextTag = buffer.indexOf('<', 1);
+        if (nextTag === -1) {
+          onEvent({ type: 'text', text: buffer });
+          buffer = '';
+          return;
+        } else {
+          onEvent({ type: 'text', text: buffer.slice(0, nextTag) });
+          buffer = buffer.slice(nextTag);
+          continue;
+        }
       }
 
       // It starts with '<desyra-'. Look for closing '>' of the tag

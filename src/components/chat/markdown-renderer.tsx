@@ -4,6 +4,7 @@ import React, { useMemo } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ChatCodeBlock } from './chat-code-block';
+import { safeHtmlToMarkdown } from '@/lib/ai/safeHtmlToMarkdown';
 
 export interface MarkdownRendererProps {
   content: string;
@@ -192,14 +193,16 @@ function MarkdownRendererBase({ content, isStreaming = false }: MarkdownRenderer
   // If streaming, handle unclosed code block fences gracefully without backtick flickering
   const processedContent = useMemo(() => {
     if (!content) return '';
-    if (!isStreaming) return content;
+    // Defensively convert stray HTML in prose to Markdown
+    const sanitized = safeHtmlToMarkdown(content);
+    if (!isStreaming) return sanitized;
 
-    const fenceMatches = content.match(/```/g);
+    const fenceMatches = sanitized.match(/```/g);
     if (fenceMatches && fenceMatches.length % 2 === 1) {
       // Append closing fence so react-markdown renders the code block immediately as it grows
-      return content + '\n```';
+      return sanitized + '\n```';
     }
-    return content;
+    return sanitized;
   }, [content, isStreaming]);
 
   return (

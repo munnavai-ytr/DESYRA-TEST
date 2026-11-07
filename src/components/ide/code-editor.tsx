@@ -14,7 +14,7 @@ import {
 import { EmptyState } from '@/components/ui/empty-state';
 import { updateFileContent, WARN_FILE_SIZE_BYTES } from '@/lib/files';
 import type { ProjectFile } from '@/lib/db';
-import { useIsWritingFile, useWritingContent } from '@/lib/ai/aiFileStore';
+import { aiFileStore, useIsWritingFile } from '@/lib/ai/aiFileStore';
 
 const CodeMirrorWrapper = dynamic(
   () => import('./codemirror-wrapper').then((mod) => mod.CodeMirrorWrapper),
@@ -33,6 +33,7 @@ export interface CodeEditorProps {
   projectId: string;
   file: ProjectFile | null;
   onFileUpdated?: (updatedFile: ProjectFile) => void;
+  isVisible?: boolean;
 }
 
 type SaveStatus = 'saved' | 'saving' | 'error';
@@ -41,9 +42,15 @@ interface ActiveCodeEditorProps {
   projectId: string;
   file: ProjectFile;
   onFileUpdated?: (updatedFile: ProjectFile) => void;
+  isVisible?: boolean;
 }
 
-function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorProps) {
+function ActiveCodeEditor({
+  projectId,
+  file,
+  onFileUpdated,
+  isVisible = true,
+}: ActiveCodeEditorProps) {
   const [content, setContent] = useState<string>(file.content);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [lastSavedContent, setLastSavedContent] = useState<string>(file.content);
@@ -51,25 +58,50 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingContentRef = useRef<string>(file.content);
   const currentFileRef = useRef<ProjectFile>(file);
+  const appendChunkRef = useRef<((chunk: string) => void) | null>(null);
 
   // Subscribe to AI live writing state for this file
   const isAiWriting = useIsWritingFile(projectId, file.path);
-  const liveAiContent = useWritingContent(projectId, file.path);
 
   useEffect(() => {
     currentFileRef.current = file;
   }, [file]);
 
-  // When external file.content updates (e.g. from AI or undo), keep state in sync
+  // Fix 3: Incremental transaction-based appends to CodeMirror when visible
+  useEffect(() => {
+    if (!isAiWriting || isVisible === false) return;
+
+    const unsubscribe = aiFileStore.subscribeContent(
+      projectId,
+      file.path,
+      (_fullContent, chunk) => {
+        if (appendChunkRef.current && chunk) {
+          appendChunkRef.current(chunk);
+        }
+      }
+    );
+
+    return unsubscribe;
+  }, [projectId, file.path, isAiWriting, isVisible]);
+
+  // When AI finishes writing, sync final content into React state
+  const prevAiWritingRef = useRef(isAiWriting);
+  useEffect(() => {
+    if (prevAiWritingRef.current && !isAiWriting) {
+      const finalContent = aiFileStore.getWritingContent(projectId, file.path) ?? file.content;
+      setContent(finalContent);
+      setLastSavedContent(finalContent);
+    }
+    prevAiWritingRef.current = isAiWriting;
+  }, [isAiWriting, projectId, file.path, file.content]);
+
+  // When external file.content updates (e.g. from file selection or undo), keep state in sync
   const [prevFileContent, setPrevFileContent] = useState(file.content);
-  if (file.content !== prevFileContent) {
+  if (file.content !== prevFileContent && !isAiWriting) {
     setPrevFileContent(file.content);
     setContent(file.content);
     setLastSavedContent(file.content);
   }
-
-  // Active value to display in editor (live stream content if AI is writing this file)
-  const activeValue = isAiWriting && liveAiContent !== null ? liveAiContent : content;
 
   // Save worker function
   const saveContent = useCallback(
@@ -231,7 +263,8 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
       {/* CodeMirror Editor Area */}
       <div className="flex-1 min-h-0 min-w-0 overflow-hidden relative">
         <CodeMirrorWrapper
-          value={activeValue}
+          value={content}
+          onAppendChunkRef={appendChunkRef}
           onChange={handleContentChange}
           onBlur={handleBlur}
           readOnly={isAiWriting}
@@ -242,7 +275,7 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
   );
 }
 
-export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) {
+export function CodeEditor({ projectId, file, onFileUpdated, isVisible = true }: CodeEditorProps) {
   if (!file) {
     return (
       <div className="flex-1 h-full flex items-center justify-center p-6 bg-[var(--bg)] text-center">
@@ -261,6 +294,7 @@ export function CodeEditor({ projectId, file, onFileUpdated }: CodeEditorProps) 
       projectId={projectId}
       file={file}
       onFileUpdated={onFileUpdated}
+      isVisible={isVisible}
     />
   );
 }
