@@ -214,6 +214,18 @@ class AiFileStore {
     return this.writingFiles.has(this.makeKey(projectId, path));
   }
 
+  isAnyFileWriting(projectId?: string): boolean {
+    if (!projectId) {
+      return this.writingFiles.size > 0;
+    }
+    for (const entry of this.writingFiles.values()) {
+      if (entry.projectId === projectId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   getWritingContent(projectId: string, path: string): string | null {
     const entry = this.writingFiles.get(this.makeKey(projectId, path));
     return entry ? entry.content : null;
@@ -289,6 +301,29 @@ export function useIsWritingFile(projectId: string, path?: string | null): boole
   const getSnapshot = useCallback(
     () => (path ? aiFileStore.isWriting(projectId, path) : false),
     [projectId, path]
+  );
+
+  return useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getServerSnapshotFalse
+  );
+}
+
+/**
+ * Hook to subscribe to whether ANY file is currently being written for a project.
+ */
+export function useIsAnyFileWriting(projectId: string): boolean {
+  const subscribe = useCallback(
+    (callback: () => void) => {
+      return aiFileStore.subscribeStructure(callback);
+    },
+    []
+  );
+
+  const getSnapshot = useCallback(
+    () => aiFileStore.isAnyFileWriting(projectId),
+    [projectId]
   );
 
   return useSyncExternalStore(

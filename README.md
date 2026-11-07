@@ -1,4 +1,4 @@
-# DESYRA — Premium AI App Builder (Push 5 of 10)
+# DESYRA — Premium AI App Builder (Push 6 of 10)
 
 DESYRA is a premium, precise, dark-themed AI application builder interface.
 
@@ -28,11 +28,34 @@ DESYRA is a premium, precise, dark-themed AI application builder interface.
   - `success`: `#22C55E`, `warning`: `#F5B73B`, `error`: `#EF4444`, `info`: `#60A5FA`
 - **Radii**: 8px (`sm`), 12px (`md`), 20px (`lg`), 9999px (`pill`).
 
-## Pages Implemented in Pushes 1 to 4
+## Pages Implemented in Pushes 1 to 5
 - `/`: Home hero with headline, auto-growing chat box (min 3 to ~10 rows), 6 starter prompt chips, round orange send button, character counter, recent projects list from IndexedDB, and BYOK gating modal preserving drafts when no key is configured.
 - `/projects`: Grid of saved projects from Dexie IndexedDB with open, rename, and delete actions (with accessible confirmation modal and toast notifications).
 - `/settings`: Full Bring-Your-Own-Key management (Google Gemini, Groq, OpenRouter, OpenAI, Anthropic, and custom endpoints) with AES-GCM encryption, passphrase protection controls, danger zone data wipe options, live "Test key" verification, and searchable Model Pickers.
-- `/project/[id]`: Full-viewport (`100dvh`) IDE workspace with slim TopBar, chat pane, hierarchical file explorer, code editor, and responsive preview frame.
+- `/project/[id]`: Full-viewport (`100dvh`) IDE workspace with slim TopBar, chat pane, hierarchical file explorer, code editor, and live sandboxed preview frame.
+
+## Live Preview Engine (Push 6)
+
+Push 6 delivers a free, 100% in-browser, zero-backend live preview engine:
+
+1. **Static Web Stack Execution**:
+   - Runs HTML + CSS + JavaScript (classic scripts and ES modules with relative imports) and CDN libraries (Tailwind CDN, Alpine.js, Google Fonts, etc.).
+   - Transparent, honest unsupported stack detection: If a project contains React/JSX/TSX/Vue/Svelte or `package.json`, DESYRA displays a clear notice with the list of detected files instead of broken rendering.
+
+2. **Security & Sandboxing**:
+   - Executes inside an `<iframe>` with strict sandbox attributes: `sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock"`.
+   - Never enables `allow-same-origin` or `allow-top-navigation`, isolating preview code from the host application's DOM, cookies, and secrets.
+   - Strict `Content-Security-Policy` meta tag injected at the very top of `<head>` allowing designated CDNs (jsdelivr, tailwindcss, unpkg, cdnjs, esm.sh, google fonts) while blocking frame embeds and unauthorized origins.
+   - Per-render cryptographic `nonce` ensures that parent/iframe `postMessage` channels validate message provenance.
+
+3. **Injected Runtime & Storage Shims**:
+   - **Console Interception**: Overrides `console.log/info/warn/error/debug` with circular-reference safe serialization, line numbers, and auto-scrolling console drawer.
+   - **Persistent Preview Storage**: Shims `localStorage` and `sessionStorage` in the sandbox, backed by Dexie IndexedDB (`previewStorage` table, schema v5) with safety quotas: 200 KB per value, 1 MB total per project.
+   - **Link Interception**: External links open safely in a new tab (`window.open(..., '_blank', 'noopener')`), hash anchors scroll smoothly into view, and relative `.html` links post navigation events to switch pages within the IDE.
+
+4. **Virtual Responsive Scaling**:
+   - Phone (`390px`), Tablet (`768px`), and Desktop (`1280px`).
+   - Automatically detects container bounds using `ResizeObserver` and applies smooth CSS transform scaling when the preview container is narrower than the target device, eliminating horizontal scrollbars.
 
 ## The IDE Page (`/project/[id]`)
 

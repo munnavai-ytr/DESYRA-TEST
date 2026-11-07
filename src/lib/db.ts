@@ -70,6 +70,15 @@ export interface MetaItem {
   value: any;
 }
 
+export interface PreviewStorageItem {
+  projectId: string;
+  key: string;
+  value: string;
+}
+
+export const MAX_PREVIEW_STORAGE_TOTAL_BYTES = 1024 * 1024; // 1 MB cap
+export const MAX_PREVIEW_STORAGE_VALUE_BYTES = 200 * 1024; // 200 KB per value cap
+
 export class DesyraDatabase extends Dexie {
   projects!: Table<Project, string>;
   providers!: Table<StoredProvider, string>;
@@ -77,6 +86,7 @@ export class DesyraDatabase extends Dexie {
   modelCache!: Table<StoredModelCache, string>;
   messages!: Table<StoredMessage, string>;
   files!: Table<ProjectFile, string>;
+  previewStorage!: Table<PreviewStorageItem, [string, string]>;
 
   constructor() {
     super('desyra_db');
@@ -102,6 +112,15 @@ export class DesyraDatabase extends Dexie {
       modelCache: 'providerId, fetchedAt',
       messages: 'id, projectId, createdAt, role',
       files: 'id, projectId, path, [projectId+path], createdAt, updatedAt',
+    });
+    this.version(5).stores({
+      projects: 'id, title, createdAt, updatedAt, autoStarted',
+      providers: 'id, providerType, label, isDefault, createdAt, updatedAt, defaultModel, lastTestStatus',
+      meta: 'key',
+      modelCache: 'providerId, fetchedAt',
+      messages: 'id, projectId, createdAt, role',
+      files: 'id, projectId, path, [projectId+path], createdAt, updatedAt',
+      previewStorage: '[projectId+key], projectId',
     });
   }
 }
@@ -263,6 +282,9 @@ export async function deleteProject(id: string): Promise<boolean> {
 
   try {
     await database.projects.delete(id);
+    await database.files.where('projectId').equals(id).delete();
+    await database.messages.where('projectId').equals(id).delete();
+    await database.previewStorage.where('projectId').equals(id).delete();
     return true;
   } catch (error) {
     console.error(`[DESYRA DB] Failed to delete project ${id}:`, error);
@@ -342,6 +364,7 @@ export async function clearAllDatabaseData(): Promise<boolean> {
     await database.modelCache.clear();
     await database.messages.clear();
     await database.files.clear();
+    await database.previewStorage.clear();
     return true;
   } catch (error) {
     console.error('[DESYRA DB] Failed to clear all database data:', error);
@@ -441,6 +464,117 @@ export async function clearProjectMessages(projectId: string): Promise<void> {
     await database.messages.where('projectId').equals(projectId).delete();
   } catch (error) {
     console.error(`[DESYRA DB] Failed to clear messages for project ${projectId}:`, error);
+  }
+}
+
+/**
+ * Lists all stored localStorage shim entries for a project.
+ */
+export async function listPreviewStorage(projectId: string): Promise<Record<string, string>> {
+  const database = getDb();
+  if (!database || !projectId) return {};
+  try {
+    const items = await database.previewStorage.where('projectId').equals(projectId).toArray();
+    const result: Record<string, string> = {};
+    for (const item of items) {
+      result[item.key] = item.value;
+    }
+    return result;
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to list preview storage for project ${projectId}:`, error);
+    return {};
+  }
+}
+
+/**
+ * Calculates total bytes currently stored in previewStorage for a project.
+ */
+export async function getPreviewStorageBytes(projectId: string): Promise<number> {
+  const database = getDb();
+  if (!database || !projectId) return 0;
+  try {
+    const items = await database.previewStorage.where('projectId').equals(projectId).toArray();
+    let total = 0;
+    for (const item of items) {
+      total += new Blob([item.key, item.value]).size;
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Sets an item in preview storage, enforcing 200 KB per value and 1 MB total per project.
+ */
+export async function setPreviewStorageItem(
+  projectId: string,
+  key: string,
+  value: string
+): Promise<{ success: boolean; error?: string }> {
+  const database = getDb();
+  if (!database || !projectId) return { success: false, error: 'Database unavailable' };
+
+  const valueBytes = new Blob([value]).size;
+  if (valueBytes > MAX_PREVIEW_STORAGE_VALUE_BYTES) {
+    return {
+      success: false,
+      error: `Value size (${Math.round(valueBytes / 1024)} KB) exceeds the 200 KB preview limit.`,
+    };
+  }
+
+  try {
+    const currentItems = await database.previewStorage.where('projectId').equals(projectId).toArray();
+    let totalBytes = 0;
+    for (const item of currentItems) {
+      if (item.key !== key) {
+        totalBytes += new Blob([item.key, item.value]).size;
+      }
+    }
+    totalBytes += new Blob([key, value]).size;
+
+    if (totalBytes > MAX_PREVIEW_STORAGE_TOTAL_BYTES) {
+      return {
+        success: false,
+        error: `Total project preview storage limit (1 MB) exceeded.`,
+      };
+    }
+
+    await database.previewStorage.put({
+      projectId,
+      key,
+      value,
+    });
+    return { success: true };
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to set preview storage item ${key}:`, error);
+    return { success: false, error: 'Failed to write to preview storage.' };
+  }
+}
+
+/**
+ * Removes a key from preview storage.
+ */
+export async function removePreviewStorageItem(projectId: string, key: string): Promise<void> {
+  const database = getDb();
+  if (!database || !projectId) return;
+  try {
+    await database.previewStorage.delete([projectId, key]);
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to remove preview storage item ${key}:`, error);
+  }
+}
+
+/**
+ * Clears all preview storage data for a project.
+ */
+export async function clearPreviewStorage(projectId: string): Promise<void> {
+  const database = getDb();
+  if (!database || !projectId) return;
+  try {
+    await database.previewStorage.where('projectId').equals(projectId).delete();
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to clear preview storage for project ${projectId}:`, error);
   }
 }
 

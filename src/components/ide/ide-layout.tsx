@@ -533,7 +533,10 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               {/* Main Workspace Area (Preview or Code) */}
               <div className="flex-1 h-full min-h-0 overflow-hidden">
                 {workspaceTab === 'preview' ? (
-                  <PreviewPane />
+                  <PreviewPane
+                    projectId={project.id}
+                    isVisible={workspaceTab === 'preview'}
+                  />
                 ) : (
                   <CodeEditor
                     projectId={project.id}
@@ -572,7 +575,10 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               mobileTab === 'preview' ? 'flex' : 'hidden'
             }`}
           >
-            <PreviewPane />
+            <PreviewPane
+              projectId={project.id}
+              isVisible={mobileTab === 'preview'}
+            />
           </div>
 
           {/* Mobile Pane 3: Files */}
