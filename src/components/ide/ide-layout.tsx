@@ -67,6 +67,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
     return DEFAULT_DESKTOP_RATIO;
   });
 
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
   const [isDraggingDivider, setIsDraggingDivider] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -142,73 +143,121 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Handle divider dragging
-  const handleMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsDraggingDivider(true);
-  };
-
-  const handleTouchStart = () => {
-    setIsDraggingDivider(true);
-  };
-
+  // Lock html and body on the IDE route only, restored on unmount
   useEffect(() => {
-    if (!isDraggingDivider) return;
+    const originalHtmlOverflow = document.documentElement.style.overflow;
+    const originalHtmlHeight = document.documentElement.style.height;
+    const originalHtmlOverscroll = document.documentElement.style.overscrollBehavior;
 
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const containerWidth = rect.width;
-      const mouseX = e.clientX - rect.left;
+    const originalBodyOverflow = document.body.style.overflow;
+    const originalBodyHeight = document.body.style.height;
+    const originalBodyOverscroll = document.body.style.overscrollBehavior;
+    const originalBodyPosition = document.body.style.position;
+    const originalBodyWidth = document.body.style.width;
 
-      // Min chat 300px, min workspace 480px
-      const minRatio = 300 / containerWidth;
-      const maxRatio = (containerWidth - 480) / containerWidth;
+    document.documentElement.style.overflow = 'hidden';
+    document.documentElement.style.height = '100%';
+    document.documentElement.style.overscrollBehavior = 'none';
 
-      if (maxRatio > minRatio) {
-        const rawRatio = mouseX / containerWidth;
-        const clamped = Math.max(minRatio, Math.min(maxRatio, rawRatio));
-        setDividerRatio(clamped);
+    document.body.style.overflow = 'hidden';
+    document.body.style.height = '100%';
+    document.body.style.overscrollBehavior = 'none';
+    document.body.style.position = 'fixed';
+    document.body.style.width = '100%';
+
+    return () => {
+      document.documentElement.style.overflow = originalHtmlOverflow;
+      document.documentElement.style.height = originalHtmlHeight;
+      document.documentElement.style.overscrollBehavior = originalHtmlOverscroll;
+
+      document.body.style.overflow = originalBodyOverflow;
+      document.body.style.height = originalBodyHeight;
+      document.body.style.overscrollBehavior = originalBodyOverscroll;
+      document.body.style.position = originalBodyPosition;
+      document.body.style.width = originalBodyWidth;
+    };
+  }, []);
+
+  // Update visual viewport dimensions and detect virtual keyboard
+  useEffect(() => {
+    const updateViewport = () => {
+      const vv = window.visualViewport;
+      const height = vv ? vv.height : window.innerHeight;
+      const top = vv ? vv.offsetTop : 0;
+
+      document.documentElement.style.setProperty('--app-height', `${height}px`);
+      document.documentElement.style.setProperty('--app-top', `${top}px`);
+
+      // Detect mobile virtual keyboard
+      if (window.innerWidth < 768 && vv) {
+        const diff = window.innerHeight - vv.height;
+        setIsKeyboardOpen(diff > 140);
+      } else {
+        setIsKeyboardOpen(false);
       }
     };
 
-    const handleTouchMove = (e: TouchEvent) => {
-      if (!containerRef.current || e.touches.length === 0) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const containerWidth = rect.width;
-      const touchX = e.touches[0].clientX - rect.left;
+    updateViewport();
 
-      const minRatio = 300 / containerWidth;
-      const maxRatio = (containerWidth - 480) / containerWidth;
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener('resize', updateViewport);
+      vv.addEventListener('scroll', updateViewport);
+    }
+    window.addEventListener('resize', updateViewport);
+    window.addEventListener('orientationchange', updateViewport);
 
-      if (maxRatio > minRatio) {
-        const rawRatio = touchX / containerWidth;
-        const clamped = Math.max(minRatio, Math.min(maxRatio, rawRatio));
-        setDividerRatio(clamped);
+    return () => {
+      if (vv) {
+        vv.removeEventListener('resize', updateViewport);
+        vv.removeEventListener('scroll', updateViewport);
       }
+      window.removeEventListener('resize', updateViewport);
+      window.removeEventListener('orientationchange', updateViewport);
+      document.documentElement.style.removeProperty('--app-height');
+      document.documentElement.style.removeProperty('--app-top');
     };
+  }, []);
 
-    const handleMouseUp = () => {
+  // Handle divider dragging via Pointer Events
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+    setIsDraggingDivider(true);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingDivider || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const containerWidth = rect.width;
+    const pointerX = e.clientX - rect.left;
+
+    // Min chat 300px, min workspace 480px
+    const minRatio = 300 / containerWidth;
+    const maxRatio = (containerWidth - 480) / containerWidth;
+
+    if (maxRatio > minRatio) {
+      const rawRatio = pointerX / containerWidth;
+      const clamped = Math.max(minRatio, Math.min(maxRatio, rawRatio));
+      setDividerRatio(clamped);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isDraggingDivider) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {}
       setIsDraggingDivider(false);
       try {
         localStorage.setItem(STORAGE_DIVIDER_KEY, dividerRatio.toString());
       } catch (err) {
         console.error('Failed to save divider ratio preference:', err);
       }
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('touchmove', handleTouchMove);
-    window.addEventListener('touchend', handleMouseUp);
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('touchmove', handleTouchMove);
-      window.removeEventListener('touchend', handleMouseUp);
-    };
-  }, [isDraggingDivider, dividerRatio]);
+    }
+  };
 
   // Keyboard accessibility on divider
   const handleDividerKeyDown = (e: React.KeyboardEvent) => {
@@ -257,7 +306,13 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
   };
 
   return (
-    <div className="flex flex-col h-[100dvh] w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden select-none">
+    <div
+      style={{
+        height: 'var(--app-height, 100dvh)',
+        top: 'var(--app-top, 0px)',
+      }}
+      className="fixed inset-0 flex flex-col w-full bg-[var(--bg)] text-[var(--text)] overflow-hidden select-none"
+    >
       {/* Top Bar (Height ~48px) */}
       <TopBar
         projectId={project.id}
@@ -271,13 +326,13 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
       />
 
       {/* Main Body - Viewport Area */}
-      <div ref={containerRef} className="flex-1 flex overflow-hidden relative">
+      <div ref={containerRef} className="flex-1 min-h-0 min-w-0 w-full overflow-hidden relative flex">
         {/* ================= DESKTOP & TABLET LAYOUT (>= 768px) ================= */}
-        <div className="hidden md:flex flex-1 w-full h-full overflow-hidden">
+        <div className="hidden md:flex flex-1 w-full h-full min-h-0 min-w-0 overflow-hidden">
           {/* Left Pane: Chat */}
           <div
             style={{ width: `${dividerRatio * 100}%` }}
-            className="h-full flex flex-col shrink-0 min-w-[300px]"
+            className="h-full flex flex-col shrink-0 min-w-[300px] min-h-0 overflow-hidden"
           >
             <ChatPane
               project={project}
@@ -293,11 +348,13 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
             aria-orientation="vertical"
             aria-valuenow={Math.round(dividerRatio * 100)}
             tabIndex={0}
-            onMouseDown={handleMouseDown}
-            onTouchStart={handleTouchStart}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
             onKeyDown={handleDividerKeyDown}
             aria-label="Resize chat and workspace panes"
-            className={`w-1 hover:w-1.5 active:w-1.5 bg-[var(--border)] hover:bg-[var(--accent)] transition-colors cursor-col-resize shrink-0 z-20 flex items-center justify-center relative focus:outline-none focus:ring-1 focus:ring-[var(--accent)] ${
+            className={`w-1 hover:w-1.5 active:w-1.5 bg-[var(--border)] hover:bg-[var(--accent)] transition-colors cursor-col-resize shrink-0 z-20 flex items-center justify-center relative focus:outline-none focus:ring-1 focus:ring-[var(--accent)] touch-none select-none ${
               isDraggingDivider ? 'bg-[var(--accent)] w-1.5' : ''
             }`}
           >
@@ -308,7 +365,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
           {/* Right Pane: IDE Workspace */}
           <div
             style={{ width: `${(1 - dividerRatio) * 100}%` }}
-            className="h-full flex flex-col flex-1 min-w-[480px] bg-[var(--bg)] overflow-hidden"
+            className="h-full flex flex-col flex-1 min-w-[480px] min-h-0 bg-[var(--bg)] overflow-hidden"
           >
             {/* Workspace Top Tab Bar */}
             <div className="h-10 px-3 bg-[var(--surface)] border-b border-[var(--border)] flex items-center justify-between shrink-0">
@@ -375,7 +432,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
             </div>
 
             {/* Split Content: File Tree on left + (Preview or Code) on right */}
-            <div className="flex-1 flex overflow-hidden relative">
+            <div className="flex-1 flex min-h-0 overflow-hidden relative">
               {/* File Tree Panel */}
               {isTablet ? (
                 // Tablet: Overlay drawer
@@ -392,7 +449,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
                         <X className="w-3.5 h-3.5" />
                       </IconButton>
                     </div>
-                    <div className="flex-1 overflow-hidden">
+                    <div className="flex-1 min-h-0 overflow-hidden">
                       <FileTree
                         projectId={project.id}
                         selectedFilePath={selectedFile?.path ?? null}
@@ -420,7 +477,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               )}
 
               {/* Main Workspace Area (Preview or Code) */}
-              <div className="flex-1 h-full overflow-hidden">
+              <div className="flex-1 h-full min-h-0 overflow-hidden">
                 {workspaceTab === 'preview' ? (
                   <PreviewPane />
                 ) : (
@@ -437,10 +494,10 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
 
         {/* ================= MOBILE LAYOUT (< 768px) ================= */}
         {/* All 4 panes are rendered and kept mounted to preserve state (scroll position, textarea, draft) */}
-        <div className="flex md:hidden flex-1 w-full h-full pb-14 overflow-hidden relative">
+        <div className="flex md:hidden flex-1 w-full h-full min-h-0 min-w-0 overflow-hidden relative">
           {/* Mobile Pane 1: Chat */}
           <div
-            className={`w-full h-full flex flex-col ${
+            className={`w-full h-full min-h-0 min-w-0 flex flex-col ${
               mobileTab === 'chat' ? 'flex' : 'hidden'
             }`}
           >
@@ -454,7 +511,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
 
           {/* Mobile Pane 2: Preview */}
           <div
-            className={`w-full h-full flex flex-col ${
+            className={`w-full h-full min-h-0 min-w-0 flex flex-col ${
               mobileTab === 'preview' ? 'flex' : 'hidden'
             }`}
           >
@@ -463,7 +520,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
 
           {/* Mobile Pane 3: Files */}
           <div
-            className={`w-full h-full flex flex-col ${
+            className={`w-full h-full min-h-0 min-w-0 flex flex-col ${
               mobileTab === 'files' ? 'flex' : 'hidden'
             }`}
           >
@@ -479,7 +536,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
 
           {/* Mobile Pane 4: Code */}
           <div
-            className={`w-full h-full flex flex-col ${
+            className={`w-full h-full min-h-0 min-w-0 flex flex-col ${
               mobileTab === 'code' ? 'flex' : 'hidden'
             }`}
           >
@@ -489,16 +546,17 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               onFileUpdated={(updated) => setSelectedFile(updated)}
             />
           </div>
-
-          {/* Fixed Bottom Mobile Tabs Bar */}
-          <MobileTabs
-            activeTab={mobileTab}
-            onTabChange={(tab) => setMobileTab(tab)}
-            fileCount={filesCount}
-            hasSelectedFile={Boolean(selectedFile)}
-          />
         </div>
       </div>
+
+      {/* Fixed Bottom Mobile Tabs Bar in Root Flex */}
+      <MobileTabs
+        activeTab={mobileTab}
+        onTabChange={(tab) => setMobileTab(tab)}
+        fileCount={filesCount}
+        hasSelectedFile={Boolean(selectedFile)}
+        isHidden={isKeyboardOpen}
+      />
     </div>
   );
 }

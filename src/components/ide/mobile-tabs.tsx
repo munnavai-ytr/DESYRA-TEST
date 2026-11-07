@@ -10,6 +10,7 @@ export interface MobileTabsProps {
   onTabChange: (tab: MobileTab) => void;
   fileCount?: number;
   hasSelectedFile?: boolean;
+  isHidden?: boolean;
 }
 
 export function MobileTabs({
@@ -17,8 +18,18 @@ export function MobileTabs({
   onTabChange,
   fileCount = 0,
   hasSelectedFile = false,
+  isHidden = false,
 }: MobileTabsProps) {
-  const tabs: { id: MobileTab; label: string; icon: React.ComponentType<{ className?: string }>; badge?: string | number }[] = [
+  if (isHidden) {
+    return null;
+  }
+
+  const tabs: {
+    id: MobileTab;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: string | number;
+  }[] = [
     { id: 'chat', label: 'Chat', icon: MessageSquare },
     { id: 'preview', label: 'Preview', icon: Eye },
     { id: 'files', label: 'Files', icon: FolderTree, badge: fileCount > 0 ? fileCount : undefined },
@@ -28,7 +39,7 @@ export function MobileTabs({
   return (
     <nav
       aria-label="Mobile workspace navigation"
-      className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[var(--surface)] border-t border-[var(--border)] px-2 flex items-center justify-around z-40 select-none pb-[env(safe-area-inset-bottom,0px)]"
+      className="md:hidden flex-none w-full bg-[var(--surface)] border-t border-[var(--border)] px-2 flex items-center justify-around z-30 select-none pb-[env(safe-area-inset-bottom,0px)] h-14"
     >
       {tabs.map((tab) => {
         const Icon = tab.icon;

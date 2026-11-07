@@ -56,9 +56,9 @@ export function ChatCodeBlock({ code, language }: ChatCodeBlockProps) {
   };
 
   return (
-    <div className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-md)] overflow-hidden my-3 select-text shadow-xs">
+    <div className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-md)] overflow-hidden my-3 select-text shadow-xs flex flex-col">
       {/* Header bar (~36px) */}
-      <div className="h-9 px-3 flex items-center justify-between border-b border-[var(--border)] bg-[var(--elevated)]/60 select-none">
+      <div className="h-9 px-3 flex items-center justify-between border-b border-[var(--border)] bg-[var(--elevated)]/60 select-none flex-none">
         <span className="text-[11px] font-mono lowercase text-[var(--muted)] tracking-wider">
           {cleanLang}
         </span>
@@ -83,11 +83,13 @@ export function ChatCodeBlock({ code, language }: ChatCodeBlockProps) {
         </button>
       </div>
 
-      {/* Code Body */}
-      <div className="relative">
-        <pre className="font-mono text-[12.5px] sm:text-[13px] leading-[1.55] p-3 sm:p-3.5 overflow-x-auto whitespace-pre text-[var(--text)] [tab-size:2] [scrollbar-width:thin] touch-pan-x">
-          <code>{displayCode}</code>
-        </pre>
+      {/* Code Body - horizontal scroller with vertical swipe pass-through */}
+      <div className={isLong && !isExpanded ? 'relative overflow-hidden' : 'relative'}>
+        <div className="w-full overflow-x-auto overflow-y-hidden [touch-action:pan-x_pan-y] [overscroll-behavior-x:contain] [overscroll-behavior-y:auto] [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]">
+          <pre className="font-mono text-[12.5px] sm:text-[13px] leading-[1.55] p-3 sm:p-3.5 whitespace-pre text-[var(--text)] [tab-size:2] m-0 border-0 bg-transparent">
+            <code>{displayCode}</code>
+          </pre>
+        </div>
 
         {/* Gradient fade when collapsed */}
         {isLong && !isExpanded && (
@@ -100,13 +102,13 @@ export function ChatCodeBlock({ code, language }: ChatCodeBlockProps) {
 
       {/* Expand / Collapse Toggle Bar */}
       {isLong && (
-        <div className="border-t border-[var(--border)] bg-[var(--elevated)]/30 px-3 py-1.5 flex items-center justify-center">
+        <div className="border-t border-[var(--border)] bg-[var(--elevated)]/30 px-3 py-1.5 flex items-center justify-center flex-none">
           <button
             type="button"
             onClick={() => setIsExpanded((prev) => !prev)}
             aria-expanded={isExpanded}
             aria-label={isExpanded ? 'Collapse code block' : `Show all ${totalLines} lines`}
-            className="flex items-center gap-1 text-[11px] font-medium text-[var(--muted)] hover:text-[var(--accent)] transition-colors py-0.5 px-2 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            className="flex items-center gap-1 text-[11px] font-medium text-[var(--muted)] hover:text-[var(--accent)] transition-colors py-0.5 px-2 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)] cursor-pointer"
           >
             {isExpanded ? (
               <>

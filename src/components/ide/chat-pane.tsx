@@ -390,13 +390,14 @@ export function ChatPane({
   const hasValidConfig = Boolean(activeProvider && activeModel && !isLocked);
 
   return (
-    <div className="flex flex-col h-full bg-[var(--bg)] border-r border-[var(--border)] overflow-hidden relative">
-      {/* Messages Scroll Area */}
-      <div
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-x-hidden overflow-y-auto px-3.5 sm:px-4 py-4 space-y-4 sm:space-y-5 text-left"
-      >
+    <div className="flex flex-col h-full min-h-0 min-w-0 w-full bg-[var(--bg)] border-r border-[var(--border)] overflow-hidden relative">
+      {/* Message List Area with Floating Button */}
+      <div className="relative flex-1 min-h-0 w-full overflow-hidden flex flex-col">
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 min-h-0 w-full overflow-x-hidden overflow-y-auto px-3.5 sm:px-4 py-4 space-y-4 sm:space-y-5 text-left [overscroll-behavior-y:contain] [-webkit-overflow-scrolling:touch] [overflow-anchor:auto]"
+        >
         {/* If no valid config & no messages, show EmptyState explaining what is missing + the saved idea */}
         {messages.length === 0 && !hasValidConfig && (
           <div className="space-y-4 my-auto py-6">
@@ -534,21 +535,22 @@ export function ChatPane({
       </div>
 
       {/* Floating "Jump to latest" button when user scrolled up */}
-      {isScrolledUp && (
-        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20">
-          <button
-            type="button"
-            onClick={() => scrollToBottom(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[var(--surface)] border border-[var(--border)] text-xs text-[var(--text)] shadow-lg transition-all hover:scale-105 cursor-pointer"
-          >
-            <ArrowDown className="w-3.5 h-3.5 text-[var(--accent)]" />
-            <span>Jump to latest</span>
-          </button>
-        </div>
-      )}
+        {isScrolledUp && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => scrollToBottom(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[var(--surface)] border border-[var(--border)] text-xs text-[var(--text)] shadow-lg transition-all hover:scale-105 cursor-pointer"
+            >
+              <ArrowDown className="w-3.5 h-3.5 text-[var(--accent)]" />
+              <span>Jump to latest</span>
+            </button>
+          </div>
+        )}
+      </div>
 
-      {/* Composer Section */}
-      <div className="p-2.5 sm:p-3 bg-[var(--surface)] border-t border-[var(--border)] shrink-0 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
+      {/* Composer Section - flex-none, flush with bottom / mobile tabs */}
+      <div className="p-2.5 sm:p-3 bg-[var(--surface)] border-t border-[var(--border)] flex-none w-full">
         <form
           onSubmit={(e) => {
             e.preventDefault();

@@ -153,7 +153,7 @@ const customComponents: Components = {
 
   table({ children, ...props }) {
     return (
-      <div className="w-full my-3 overflow-x-auto rounded-[var(--radius-sm)] border border-[var(--border)] [scrollbar-width:thin]">
+      <div className="w-full my-3 overflow-x-auto overflow-y-hidden [touch-action:pan-x_pan-y] [overscroll-behavior-x:contain] [overscroll-behavior-y:auto] [-webkit-overflow-scrolling:touch] rounded-[var(--radius-sm)] border border-[var(--border)] [scrollbar-width:thin]">
         <table
           className="w-full border-collapse text-left text-xs sm:text-sm text-[var(--text)]"
           {...props}
