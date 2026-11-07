@@ -1,10 +1,33 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { FileCode, Check, AlertCircle, Loader2, AlertTriangle, FileText } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import {
+  FileCode,
+  Check,
+  AlertCircle,
+  Loader2,
+  AlertTriangle,
+  FileText,
+  Sparkles,
+} from 'lucide-react';
 import { EmptyState } from '@/components/ui/empty-state';
 import { updateFileContent, WARN_FILE_SIZE_BYTES } from '@/lib/files';
 import type { ProjectFile } from '@/lib/db';
+import { useIsWritingFile, useWritingContent } from '@/lib/ai/aiFileStore';
+
+const CodeMirrorWrapper = dynamic(
+  () => import('./codemirror-wrapper').then((mod) => mod.CodeMirrorWrapper),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex-1 h-full flex items-center justify-center text-xs text-[var(--muted)]">
+        <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)] mr-2" />
+        <span>Loading editor...</span>
+      </div>
+    ),
+  }
+);
 
 export interface CodeEditorProps {
   projectId: string;
@@ -25,19 +48,33 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [lastSavedContent, setLastSavedContent] = useState<string>(file.content);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const lineNumbersRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingContentRef = useRef<string>(file.content);
   const currentFileRef = useRef<ProjectFile>(file);
+
+  // Subscribe to AI live writing state for this file
+  const isAiWriting = useIsWritingFile(projectId, file.path);
+  const liveAiContent = useWritingContent(projectId, file.path);
 
   useEffect(() => {
     currentFileRef.current = file;
   }, [file]);
 
+  // When external file.content updates (e.g. from AI or undo), keep state in sync
+  const [prevFileContent, setPrevFileContent] = useState(file.content);
+  if (file.content !== prevFileContent) {
+    setPrevFileContent(file.content);
+    setContent(file.content);
+    setLastSavedContent(file.content);
+  }
+
+  // Active value to display in editor (live stream content if AI is writing this file)
+  const activeValue = isAiWriting && liveAiContent !== null ? liveAiContent : content;
+
   // Save worker function
   const saveContent = useCallback(
     async (textToSave: string, targetFile: ProjectFile) => {
+      if (isAiWriting) return; // Never overwrite while AI is actively streaming to this file
       try {
         setSaveStatus('saving');
         await updateFileContent(projectId, targetFile.path, textToSave);
@@ -53,11 +90,12 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
         setSaveStatus('error');
       }
     },
-    [projectId, onFileUpdated]
+    [projectId, isAiWriting, onFileUpdated]
   );
 
   // Autosave debounce on content change (600ms)
   const handleContentChange = (newVal: string) => {
+    if (isAiWriting) return;
     setContent(newVal);
     pendingContentRef.current = newVal;
 
@@ -80,6 +118,7 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
 
   // Immediate save on blur
   const handleBlur = () => {
+    if (isAiWriting) return;
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
@@ -91,7 +130,7 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
   // Flush on unmount or beforeunload
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (pendingContentRef.current !== lastSavedContent) {
+      if (!isAiWriting && pendingContentRef.current !== lastSavedContent) {
         updateFileContent(
           projectId,
           currentFileRef.current.path,
@@ -107,7 +146,7 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
-      if (pendingContentRef.current !== lastSavedContent) {
+      if (!isAiWriting && pendingContentRef.current !== lastSavedContent) {
         updateFileContent(
           projectId,
           currentFileRef.current.path,
@@ -115,40 +154,7 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
         ).catch(console.error);
       }
     };
-  }, [projectId, lastSavedContent]);
-
-  // Handle Tab key to insert 2 spaces
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      const updated = content.substring(0, start) + '  ' + content.substring(end);
-
-      handleContentChange(updated);
-
-      // Restore cursor position after inserted spaces
-      requestAnimationFrame(() => {
-        textarea.selectionStart = textarea.selectionEnd = start + 2;
-      });
-    }
-  };
-
-  // Synchronize scroll between textarea and line-number gutter
-  const handleScroll = () => {
-    if (textareaRef.current && lineNumbersRef.current) {
-      lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
-    }
-  };
-
-  // Compute line count
-  const lineCount = useMemo(() => {
-    const lines = content.split('\n').length;
-    return Math.max(lines, 1);
-  }, [content]);
+  }, [projectId, isAiWriting, lastSavedContent]);
 
   // Compute file size in KB
   const fileSizeKB = useMemo(() => {
@@ -175,63 +181,61 @@ function ActiveCodeEditor({ projectId, file, onFileUpdated }: ActiveCodeEditorPr
 
         {/* Save Status Indicator */}
         <div className="flex items-center gap-1.5 text-xs">
-          {saveStatus === 'saved' && (
-            <span className="flex items-center gap-1 text-[var(--muted)] text-[11px]">
-              <Check className="w-3 h-3 text-[var(--success)]" />
-              <span>Saved</span>
+          {isAiWriting ? (
+            <span className="flex items-center gap-1 text-[var(--accent)] text-[11px] font-medium animate-pulse">
+              <Sparkles className="w-3 h-3 text-[var(--accent)]" />
+              <span>AI Writing...</span>
             </span>
-          )}
-          {saveStatus === 'saving' && (
-            <span className="flex items-center gap-1 text-[var(--warning)] text-[11px]">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Saving...</span>
-            </span>
-          )}
-          {saveStatus === 'error' && (
-            <span className="flex items-center gap-1 text-[var(--error)] text-[11px]">
-              <AlertCircle className="w-3 h-3" />
-              <span>Error saving</span>
-            </span>
+          ) : (
+            <>
+              {saveStatus === 'saved' && (
+                <span className="flex items-center gap-1 text-[var(--muted)] text-[11px]">
+                  <Check className="w-3 h-3 text-[var(--success)]" />
+                  <span>Saved</span>
+                </span>
+              )}
+              {saveStatus === 'saving' && (
+                <span className="flex items-center gap-1 text-[var(--warning)] text-[11px]">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Saving...</span>
+                </span>
+              )}
+              {saveStatus === 'error' && (
+                <span className="flex items-center gap-1 text-[var(--error)] text-[11px]">
+                  <AlertCircle className="w-3 h-3" />
+                  <span>Error saving</span>
+                </span>
+              )}
+            </>
           )}
         </div>
       </div>
 
+      {/* AI Writing Live Banner */}
+      {isAiWriting && (
+        <div className="px-3 py-1.5 bg-[rgba(255,107,26,0.12)] border-b border-[rgba(255,107,26,0.25)] text-xs text-[var(--accent)] flex items-center gap-2 shrink-0 select-none animate-in fade-in duration-150">
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          <span className="font-medium">DESYRA is writing this file...</span>
+          <span className="text-[11px] opacity-75 hidden sm:inline">(Read-only during generation)</span>
+        </div>
+      )}
+
       {/* Large File Warning */}
-      {isLargeFile && (
+      {isLargeFile && !isAiWriting && (
         <div className="px-3 py-1.5 bg-[rgba(245,183,59,0.1)] border-b border-[rgba(245,183,59,0.25)] text-xs text-[var(--warning)] flex items-center gap-2 shrink-0">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
           <span>Large file ({fileSizeKB} KB): text rendering and editing may experience latency.</span>
         </div>
       )}
 
-      {/* Editor Body: Gutter + Textarea */}
-      <div className="flex-1 flex overflow-hidden relative">
-        {/* Line Numbers Gutter */}
-        <div
-          ref={lineNumbersRef}
-          aria-hidden="true"
-          className="w-12 py-3 bg-[var(--surface)] border-r border-[var(--border)] text-right pr-2.5 font-mono text-xs text-[var(--disabled)] select-none overflow-hidden shrink-0 leading-5"
-        >
-          {Array.from({ length: lineCount }).map((_, i) => (
-            <div key={i + 1}>{i + 1}</div>
-          ))}
-        </div>
-
-        {/* Code Textarea */}
-        <textarea
-          ref={textareaRef}
-          value={content}
-          onChange={(e) => handleContentChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onScroll={handleScroll}
+      {/* CodeMirror Editor Area */}
+      <div className="flex-1 min-h-0 min-w-0 overflow-hidden relative">
+        <CodeMirrorWrapper
+          value={activeValue}
+          onChange={handleContentChange}
           onBlur={handleBlur}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoComplete="off"
-          autoCorrect="off"
-          wrap="off"
-          className="flex-1 h-full py-3 px-3 bg-transparent text-[var(--text)] font-mono text-xs sm:text-sm leading-5 resize-none outline-none border-none whitespace-pre overflow-x-auto overflow-y-auto selection:bg-[var(--accent-soft)]"
-          aria-label={`Editing ${file.path}`}
+          readOnly={isAiWriting}
+          filePath={file.path}
         />
       </div>
     </div>

@@ -14,7 +14,6 @@ import {
   Edit2,
   ChevronRight,
   ChevronDown,
-  FolderPlus,
   PanelLeftClose,
   FileQuestion,
   AlertTriangle,
@@ -38,6 +37,11 @@ import {
   type TreeNode,
 } from '@/lib/files';
 import type { ProjectFile } from '@/lib/db';
+import {
+  aiFileStore,
+  useProjectFileRevision,
+  useLatestChangedFiles,
+} from '@/lib/ai/aiFileStore';
 
 export interface FileTreeProps {
   projectId: string;
@@ -46,6 +50,176 @@ export interface FileTreeProps {
   onToggleCollapse?: () => void;
   isCollapsible?: boolean;
 }
+
+// Helper for selecting icon based on filename
+function getFileIcon(name: string) {
+  const ext = name.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'html':
+    case 'htm':
+      return <FileCode className="w-3.5 h-3.5 text-orange-400 shrink-0" />;
+    case 'css':
+    case 'scss':
+      return <FileCode className="w-3.5 h-3.5 text-sky-400 shrink-0" />;
+    case 'js':
+    case 'jsx':
+    case 'ts':
+    case 'tsx':
+      return <FileCode className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />;
+    case 'json':
+      return <FileJson className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
+    case 'md':
+    case 'txt':
+      return <FileText className="w-3.5 h-3.5 text-zinc-400 shrink-0" />;
+    case 'svg':
+    case 'png':
+    case 'jpg':
+    case 'webp':
+      return <ImageIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
+    default:
+      return <File className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />;
+  }
+}
+
+interface TreeRowProps {
+  node: TreeNode;
+  depth: number;
+  isSelected: boolean;
+  isFocused: boolean;
+  isExpanded: boolean;
+  isWriting: boolean;
+  isChanged: boolean;
+  onSelectNode: (node: TreeNode) => void;
+  onFocusNode: (path: string) => void;
+  onOpenRename: (file: ProjectFile) => void;
+  onOpenDeleteFile: (file: ProjectFile) => void;
+  onOpenDeleteFolder: (path: string, count: number) => void;
+  fileCountInFolder: (path: string) => number;
+}
+
+const TreeRow = React.memo(function TreeRow({
+  node,
+  depth,
+  isSelected,
+  isFocused,
+  isExpanded,
+  isWriting,
+  isChanged,
+  onSelectNode,
+  onFocusNode,
+  onOpenRename,
+  onOpenDeleteFile,
+  onOpenDeleteFolder,
+  fileCountInFolder,
+}: TreeRowProps) {
+  const isFolder = node.isFolder;
+
+  return (
+    <div
+      role="treeitem"
+      aria-selected={isSelected}
+      aria-expanded={isFolder ? isExpanded : undefined}
+      tabIndex={-1}
+      onClick={() => {
+        onFocusNode(node.path);
+        onSelectNode(node);
+      }}
+      style={{ paddingLeft: `${depth * 14 + 10}px` }}
+      className={`group flex items-center justify-between h-7 pr-2 text-xs rounded-[var(--radius-sm)] cursor-pointer transition-colors ${
+        isSelected
+          ? 'bg-[var(--accent-soft)] text-[var(--text)] font-medium border-l-2 border-[var(--accent)]'
+          : isFocused
+          ? 'bg-[var(--surface)] text-[var(--text)]'
+          : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface)]'
+      }`}
+    >
+      {/* Node Label */}
+      <div className="flex items-center gap-1.5 min-w-0 flex-1 truncate">
+        {isFolder ? (
+          <span className="text-[var(--disabled)] shrink-0">
+            {isExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5" />
+            )}
+          </span>
+        ) : (
+          <span className="w-3.5 shrink-0" />
+        )}
+
+        {isFolder ? (
+          isExpanded ? (
+            <FolderOpen className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+          ) : (
+            <Folder className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />
+          )
+        ) : (
+          getFileIcon(node.name)
+        )}
+
+        <span className="truncate">{node.name}</span>
+
+        {/* Pulsing orange dot if being written */}
+        {!isFolder && isWriting && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse shrink-0 ml-1"
+            title="Writing by DESYRA..."
+          />
+        )}
+
+        {/* Subtle changed indicator if modified in latest message */}
+        {!isFolder && !isWriting && isChanged && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]/80 shrink-0 ml-1"
+            title="Updated in latest message"
+          />
+        )}
+      </div>
+
+      {/* Action Buttons: Rename & Delete */}
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
+        {isFolder ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDeleteFolder(node.path, fileCountInFolder(node.path));
+            }}
+            title="Delete folder"
+            className="p-1 text-[var(--muted)] hover:text-[var(--error)] rounded hover:bg-[var(--elevated)]"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (node.file) onOpenRename(node.file);
+              }}
+              title="Rename (F2)"
+              className="p-1 text-[var(--muted)] hover:text-[var(--text)] rounded hover:bg-[var(--elevated)]"
+            >
+              <Edit2 className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (node.file) onOpenDeleteFile(node.file);
+              }}
+              title="Delete (Del)"
+              className="p-1 text-[var(--muted)] hover:text-[var(--error)] rounded hover:bg-[var(--elevated)]"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+});
 
 export function FileTree({
   projectId,
@@ -59,7 +233,7 @@ export function FileTree({
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
-    () => new Set(['src', 'components', 'lib', 'app', 'public'])
+    () => new Set(['src', 'components', 'lib', 'app', 'public', 'styles', 'js', 'css'])
   );
 
   // Modals state
@@ -72,14 +246,16 @@ export function FileTree({
   const [renameError, setRenameError] = useState<string | null>(null);
 
   const [fileToDelete, setFileToDelete] = useState<ProjectFile | null>(null);
-
   const [folderToDelete, setFolderToDelete] = useState<{ path: string; count: number } | null>(
     null
   );
 
-  // Focused node path for keyboard navigation
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Reactive revision & latest changed files from AI store
+  const fileRevision = useProjectFileRevision(projectId);
+  const latestChangedSet = useLatestChangedFiles(projectId);
 
   // Load files
   const refreshFiles = useCallback(async () => {
@@ -95,24 +271,25 @@ export function FileTree({
     }
   }, [projectId]);
 
+  // Sync files whenever projectId or fileRevision changes
   useEffect(() => {
-    let isMounted = true;
+    let ignore = false;
     listFiles(projectId)
       .then((list) => {
-        if (isMounted) {
+        if (!ignore) {
           setFiles(list);
           setIsLoading(false);
         }
       })
       .catch((err) => {
         console.error('Failed to load files:', err);
-        if (isMounted) setIsLoading(false);
+        if (!ignore) setIsLoading(false);
       });
 
     return () => {
-      isMounted = false;
+      ignore = true;
     };
-  }, [projectId]);
+  }, [projectId, fileRevision]);
 
   // Build tree hierarchy
   const treeNodes = useMemo(() => buildFileTree(files), [files]);
@@ -135,8 +312,7 @@ export function FileTree({
     return list;
   }, [treeNodes, expandedFolders]);
 
-  // Toggle folder expansion
-  const toggleFolder = (folderPath: string) => {
+  const toggleFolder = useCallback((folderPath: string) => {
     setExpandedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(folderPath)) {
@@ -146,7 +322,26 @@ export function FileTree({
       }
       return next;
     });
-  };
+  }, []);
+
+  const handleSelectNode = useCallback(
+    (node: TreeNode) => {
+      if (node.isFolder) {
+        toggleFolder(node.path);
+      } else if (node.file) {
+        aiFileStore.clearChanged(projectId, node.file.path);
+        onSelectFile(node.file);
+      }
+    },
+    [projectId, toggleFolder, onSelectFile]
+  );
+
+  const fileCountInFolder = useCallback(
+    (path: string) => {
+      return files.filter((f) => f.path.startsWith(`${path}/`) || f.path === path).length;
+    },
+    [files]
+  );
 
   // Keyboard navigation
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -166,11 +361,7 @@ export function FileTree({
       e.preventDefault();
       const node = visibleNodes.find((n) => n.path === focusedPath);
       if (node) {
-        if (node.isFolder) {
-          toggleFolder(node.path);
-        } else if (node.file) {
-          onSelectFile(node.file);
-        }
+        handleSelectNode(node);
       }
     } else if (e.key === 'F2') {
       e.preventDefault();
@@ -185,9 +376,7 @@ export function FileTree({
       const node = visibleNodes.find((n) => n.path === focusedPath);
       if (node) {
         if (node.isFolder) {
-          const count = files.filter(
-            (f) => f.path.startsWith(`${node.path}/`) || f.path === node.path
-          ).length;
+          const count = fileCountInFolder(node.path);
           setFolderToDelete({ path: node.path, count });
         } else if (node.file) {
           setFileToDelete(node.file);
@@ -318,152 +507,39 @@ export function FileTree({
     }
   };
 
-  // Helper for selecting icon based on filename
-  const getFileIcon = (name: string) => {
-    const ext = name.split('.').pop()?.toLowerCase();
-    switch (ext) {
-      case 'html':
-      case 'htm':
-        return <FileCode className="w-3.5 h-3.5 text-orange-400 shrink-0" />;
-      case 'css':
-      case 'scss':
-        return <FileCode className="w-3.5 h-3.5 text-sky-400 shrink-0" />;
-      case 'js':
-      case 'jsx':
-      case 'ts':
-      case 'tsx':
-        return <FileCode className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />;
-      case 'json':
-        return <FileJson className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
-      case 'md':
-      case 'txt':
-        return <FileText className="w-3.5 h-3.5 text-zinc-400 shrink-0" />;
-      case 'svg':
-      case 'png':
-      case 'jpg':
-      case 'webp':
-        return <ImageIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
-      default:
-        return <File className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />;
-    }
-  };
+  // Recursive tree renderer using memoized TreeRow
+  const renderTree = (nodes: TreeNode[], depth: number = 0): React.ReactNode => {
+    return nodes.map((node) => {
+      const isFolder = node.isFolder;
+      const isExpanded = expandedFolders.has(node.path);
+      const isSelected = !isFolder && selectedFilePath === node.path;
+      const isFocused = focusedPath === node.path;
+      const isWriting = !isFolder && node.file ? aiFileStore.isWriting(projectId, node.file.path) : false;
+      const isChanged = !isFolder && node.file ? latestChangedSet.has(node.file.path) : false;
 
-  // Render tree node recursively
-  const renderNode = (node: TreeNode, depth: number = 0) => {
-    const isFolder = node.isFolder;
-    const isExpanded = expandedFolders.has(node.path);
-    const isSelected = !isFolder && selectedFilePath === node.path;
-    const isFocused = focusedPath === node.path;
-
-    return (
-      <div key={node.path} className="select-none">
-        <div
-          role="treeitem"
-          aria-selected={isSelected}
-          aria-expanded={isFolder ? isExpanded : undefined}
-          tabIndex={-1}
-          onClick={() => {
-            setFocusedPath(node.path);
-            if (isFolder) {
-              toggleFolder(node.path);
-            } else if (node.file) {
-              onSelectFile(node.file);
-            }
-          }}
-          style={{ paddingLeft: `${depth * 14 + 10}px` }}
-          className={`group flex items-center justify-between h-7 pr-2 text-xs rounded-[var(--radius-sm)] cursor-pointer transition-colors ${
-            isSelected
-              ? 'bg-[var(--accent-soft)] text-[var(--text)] font-medium border-l-2 border-[var(--accent)]'
-              : isFocused
-              ? 'bg-[var(--surface)] text-[var(--text)]'
-              : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface)]'
-          }`}
-        >
-          {/* Node Label */}
-          <div className="flex items-center gap-1.5 min-w-0 flex-1 truncate">
-            {isFolder ? (
-              <span className="text-[var(--disabled)] shrink-0">
-                {isExpanded ? (
-                  <ChevronDown className="w-3.5 h-3.5" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5" />
-                )}
-              </span>
-            ) : (
-              <span className="w-3.5 shrink-0" />
-            )}
-
-            {isFolder ? (
-              isExpanded ? (
-                <FolderOpen className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
-              ) : (
-                <Folder className="w-3.5 h-3.5 text-[var(--muted)] shrink-0" />
-              )
-            ) : (
-              getFileIcon(node.name)
-            )}
-
-            <span className="truncate">{node.name}</span>
-          </div>
-
-          {/* Action Buttons: Rename & Delete */}
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
-            {isFolder ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const count = files.filter(
-                    (f) => f.path.startsWith(`${node.path}/`) || f.path === node.path
-                  ).length;
-                  setFolderToDelete({ path: node.path, count });
-                }}
-                title="Delete folder"
-                className="p-1 text-[var(--muted)] hover:text-[var(--error)] rounded hover:bg-[var(--elevated)]"
-              >
-                <Trash2 className="w-3 h-3" />
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (node.file) {
-                      setFileToRename(node.file);
-                      setRenamePath(node.file.path);
-                      setRenameError(null);
-                    }
-                  }}
-                  title="Rename (F2)"
-                  className="p-1 text-[var(--muted)] hover:text-[var(--text)] rounded hover:bg-[var(--elevated)]"
-                >
-                  <Edit2 className="w-3 h-3" />
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (node.file) {
-                      setFileToDelete(node.file);
-                    }
-                  }}
-                  title="Delete (Del)"
-                  className="p-1 text-[var(--muted)] hover:text-[var(--error)] rounded hover:bg-[var(--elevated)]"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              </>
-            )}
-          </div>
+      return (
+        <div key={node.path} className="select-none">
+          <TreeRow
+            node={node}
+            depth={depth}
+            isSelected={isSelected}
+            isFocused={isFocused}
+            isExpanded={isExpanded}
+            isWriting={isWriting}
+            isChanged={isChanged}
+            onSelectNode={handleSelectNode}
+            onFocusNode={setFocusedPath}
+            onOpenRename={setFileToRename}
+            onOpenDeleteFile={setFileToDelete}
+            onOpenDeleteFolder={(path, count) => setFolderToDelete({ path, count })}
+            fileCountInFolder={fileCountInFolder}
+          />
+          {isFolder && isExpanded && node.children && (
+            <div>{renderTree(node.children, depth + 1)}</div>
+          )}
         </div>
-
-        {/* Render Folder Children */}
-        {isFolder && isExpanded && node.children && (
-          <div>{node.children.map((child) => renderNode(child, depth + 1))}</div>
-        )}
-      </div>
-    );
+      );
+    });
   };
 
   return (
@@ -545,7 +621,7 @@ export function FileTree({
           </div>
         ) : (
           <div role="tree" aria-label="Project files">
-            {treeNodes.map((node) => renderNode(node, 0))}
+            {renderTree(treeNodes, 0)}
           </div>
         )}
       </div>
@@ -565,7 +641,7 @@ export function FileTree({
                 setNewFilePath(e.target.value);
                 setNewFileError(null);
               }}
-              placeholder="e.g. src/components/button.tsx"
+              placeholder="e.g. index.html or styles.css"
               autoFocus
               className="text-xs sm:text-sm font-mono"
             />

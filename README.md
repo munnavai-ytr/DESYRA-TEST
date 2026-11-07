@@ -1,4 +1,4 @@
-# DESYRA — Premium AI App Builder (Push 4 of 10)
+# DESYRA — Premium AI App Builder (Push 5 of 10)
 
 DESYRA is a premium, precise, dark-themed AI application builder interface.
 
@@ -110,4 +110,67 @@ DESYRA operates as a client-side BYOK (Bring Your Own Key) architecture:
    npm run build
    npm start
    ```
+
+5. Run test suite:
+   ```bash
+   npm test
+   ```
+
+## File Protocol
+
+DESYRA establishes a strict streaming contract between the AI model and the application. The model writes real project files using semantic protocol tags instead of markdown code fences:
+
+1. **Create or Replace File (`<desyra-file>`)**:
+   ```xml
+   <desyra-file path="index.html">
+   <!DOCTYPE html>
+   <html>
+     <body>...</body>
+   </html>
+   </desyra-file>
+   ```
+   - Creates a new file or completely replaces an existing one.
+   - The streaming parser strips exactly one leading and one trailing newline, preserving all inner content, indentation, and nested HTML tags (`</div>`, code fences, scripts) untouched.
+
+2. **Partial Edit (`<desyra-edit>`)**:
+   ```xml
+   <desyra-edit path="js/app.js">
+   <<<<<<< SEARCH
+   const oldCode = true;
+   =======
+   const newCode = true;
+   >>>>>>> REPLACE
+   </desyra-edit>
+   ```
+   - Used for localized modifications (when less than ~30% of a file changes).
+   - Contains one or more sequential `SEARCH/REPLACE` blocks.
+   - Matches against current stored content: first attempts an exact match, then falls back to whitespace- and newline-tolerant matching. If still unmatched, the file is untouched and a clear retry card is presented to the user.
+
+3. **Delete File (`<desyra-delete>`)**:
+   ```xml
+   <desyra-delete path="obsolete.js" />
+   ```
+   - Removes obsolete or replaced files from the project's IndexedDB files store.
+
+Prose outside protocol tags is rendered as Markdown in chat. Protocol tags and file bodies are never displayed as raw prose in chat; instead, compact interactive **File Cards** are rendered.
+
+## How AI Changes Are Applied
+
+1. **Incremental Streaming Parser (`src/lib/ai/fileProtocol.ts`)**:
+   - Parses chunks as they arrive over HTTP/SSE.
+   - Buffers candidate tag delimiters (`<desyra-...`) so incomplete tag fragments never leak as raw prose.
+   - Emits granular lifecycle events: `fileStart`, `fileChunk`, `fileEnd`, `editStart`, `editEnd`, `delete`, `unterminated`, and `protocolError`.
+
+2. **Real-Time Reactive Store & Safe Disk Writes (`src/lib/ai/applyChanges.ts`)**:
+   - Every file path is strictly validated against POSIX relative path rules (no leading slash, no traversal `..`, no backslashes, max 200 chars, max 500 files, max 1 MB per file).
+   - An in-memory store (`aiFileStore`) tracks files currently "being written by AI" with live buffer updates.
+   - Disk writes to IndexedDB are throttled to ~300ms intervals during streaming and flushed definitively on `fileEnd` or stream termination.
+   - The CodeEditor upgrades to CodeMirror 6 with the DESYRA dark theme and becomes read-only with a live indicator while DESYRA is writing the active file.
+   - In the FileTree, active files display a pulsing orange dot, and modified files show an updated indicator until opened.
+
+3. **Per-Message Undo Safety Net**:
+   - Each assistant message records a snapshot of changes: `{ path, action: "created" | "updated" | "deleted", before, after }`.
+   - Capped at 1 MB per message to prevent storage exhaustion.
+   - Clicking **"Undo changes"** verifies that the current disk content still matches the message's `after` state, restores the `before` version, or skips already-modified files with a descriptive toast explanation.
+
 

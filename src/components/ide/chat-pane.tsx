@@ -12,10 +12,12 @@ import {
   Lock,
   Play,
   Lightbulb,
+  RotateCcw,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
+import { Tooltip } from '@/components/ui/tooltip';
 import { useToast } from '@/components/ui/toast';
 import { UnlockModal } from '@/components/settings/unlock-modal';
 import {
@@ -28,26 +30,43 @@ import {
   updateProject,
   type StoredMessage,
   type Project,
+  type FileUndoEntry,
+  type ProjectFile,
 } from '@/lib/db';
-import { streamChat, type ChatMessage, type ProviderError } from '@/lib/ai';
+import { listFiles, getFile } from '@/lib/files';
+import { streamChat, type ProviderError } from '@/lib/ai';
+import { buildAiChatContext } from '@/lib/ai/context';
+import { createStreamingProtocolParser } from '@/lib/ai/fileProtocol';
+import {
+  createChangeApplierSession,
+  executeUndoForMessage,
+} from '@/lib/ai/applyChanges';
+import { aiFileStore } from '@/lib/ai/aiFileStore';
 import { formatRelativeTime } from '@/lib/utils';
-import { MarkdownRenderer } from '@/components/chat/markdown-renderer';
-
-const SYSTEM_PROMPT = "You are DESYRA's assistant. Answer helpfully and concisely.";
-const MAX_CONTEXT_MESSAGES = 20;
+import { ParsedMessageRenderer } from '@/components/chat/parsed-message-renderer';
 
 export interface ChatPaneProps {
   project: Project;
   activeProvider: SafeProviderInfo | null;
   activeModel: string | null;
+  openFilePath?: string | null;
+  onOpenFile?: (path: string) => void;
   onRefreshProviders?: () => void;
 }
 
 interface MessageItemProps {
   message: StoredMessage;
+  onOpenFile?: (path: string) => void;
+  onRetryEdit?: (path: string) => void;
+  onUndo?: (message: StoredMessage) => void;
 }
 
-const MessageItem = React.memo(function MessageItem({ message }: MessageItemProps) {
+const MessageItem = React.memo(function MessageItem({
+  message,
+  onOpenFile,
+  onRetryEdit,
+  onUndo,
+}: MessageItemProps) {
   const isUser = message.role === 'user';
 
   if (isUser) {
@@ -65,21 +84,54 @@ const MessageItem = React.memo(function MessageItem({ message }: MessageItemProp
     );
   }
 
+  const hasUndo = Boolean(message.undoEntries && message.undoEntries.length > 0);
+  const undoDisabled = message.undoDisabledReason;
+
   return (
     <div className="w-full flex flex-col text-left group">
-      {/* Tiny DESYRA brand label above assistant message */}
-      <div className="flex items-center gap-1.5 mb-1 select-none">
-        <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
-        {message.model && (
-          <span className="text-[10px] text-[var(--disabled)] font-mono">
-            · {message.model}
-          </span>
+      {/* Header bar with brand, model, and per-message undo */}
+      <div className="flex items-center justify-between mb-1 select-none">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
+          {message.model && (
+            <span className="text-[10px] text-[var(--disabled)] font-mono">
+              · {message.model}
+            </span>
+          )}
+        </div>
+
+        {/* Per-message Undo safety net */}
+        {hasUndo && onUndo && (
+          <button
+            type="button"
+            onClick={() => onUndo(message)}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-[var(--radius-sm)] border border-[var(--border)] hover:border-[#3a3a44] bg-[var(--surface)] hover:bg-[var(--elevated)] text-[10px] font-medium text-[var(--muted)] hover:text-[var(--text)] transition-all cursor-pointer shadow-xs active:scale-95"
+            title="Undo file changes made by this message"
+          >
+            <RotateCcw className="w-3 h-3 text-[var(--accent)]" />
+            <span>Undo changes</span>
+          </button>
+        )}
+
+        {undoDisabled && (
+          <Tooltip content={undoDisabled} position="left">
+            <span className="text-[10px] text-[var(--disabled)] italic cursor-help">
+              Undo unavailable
+            </span>
+          </Tooltip>
         )}
       </div>
 
-      {/* Render Markdown without big card container */}
+      {/* Render Markdown prose + compact File Cards */}
       <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
-        <MarkdownRenderer content={message.content} />
+        <ParsedMessageRenderer
+          content={message.content}
+          undoEntries={message.undoEntries}
+          incompleteFiles={message.incompleteFiles}
+          failedEdits={message.failedEdits}
+          onOpenFile={onOpenFile}
+          onRetryEdit={onRetryEdit}
+        />
       </div>
 
       <span className="text-[10px] text-[var(--disabled)] mt-1.5 px-0.5 opacity-0 group-hover:opacity-100 transition-opacity select-none">
@@ -93,6 +145,8 @@ export function ChatPane({
   project,
   activeProvider,
   activeModel,
+  openFilePath,
+  onOpenFile,
   onRefreshProviders,
 }: ChatPaneProps) {
   const { toast } = useToast();
@@ -101,12 +155,14 @@ export function ChatPane({
   const [inputText, setInputText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  const [activeStreamingPath, setActiveStreamingPath] = useState<string | null>(null);
+  const [activeStreamingLineCount, setActiveStreamingLineCount] = useState<number>(0);
   const [isLocked, setIsLocked] = useState(false);
   const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
   const [lastError, setLastError] = useState<ProviderError | null>(null);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
-  const hasCheckedAutoStartRef = useRef(false);
 
+  const hasCheckedAutoStartRef = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -165,7 +221,7 @@ export function ChatPane({
     }
   }, [messages, streamingText, scrollToBottom]);
 
-  // Adjust textarea height: min 44px (1 row), up to ~6 rows on mobile (~144px) / ~8 rows on desktop (~192px)
+  // Adjust textarea height
   const adjustTextareaHeight = () => {
     const el = textareaRef.current;
     if (!el) return;
@@ -185,6 +241,45 @@ export function ChatPane({
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
+    }
+  };
+
+  // Undo execution handler
+  const handleUndo = async (msg: StoredMessage) => {
+    if (!msg.undoEntries || msg.undoEntries.length === 0) return;
+
+    try {
+      const result = await executeUndoForMessage(project.id, msg.undoEntries);
+
+      if (result.skippedFiles.length > 0) {
+        const reasons = result.skippedFiles.map((s) => s.reason).join(' ');
+        toast({
+          type: 'warning',
+          title: `Restored ${result.restoredCount} file(s)`,
+          message: `Some files were skipped: ${reasons}`,
+        });
+      } else {
+        toast({
+          type: 'success',
+          title: 'Changes Undone',
+          message: `Restored previous file state (${result.restoredCount} file(s) restored).`,
+        });
+      }
+
+      // Clear undo entries on message after successful undo
+      const updatedMessage: StoredMessage = {
+        ...msg,
+        undoEntries: undefined,
+      };
+      await saveProjectMessage(updatedMessage);
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? updatedMessage : m)));
+    } catch (err) {
+      console.error('Failed to execute undo:', err);
+      toast({
+        type: 'error',
+        title: 'Undo Failed',
+        message: 'Could not restore file state.',
+      });
     }
   };
 
@@ -220,13 +315,16 @@ export function ChatPane({
       return;
     }
 
+    // Clear changed files indicator in tree on new prompt
+    aiFileStore.clearAllChanged(project.id);
+
     setLastError(null);
     setInputText('');
     if (textareaRef.current) {
       textareaRef.current.style.height = '44px';
     }
 
-    // Format message content
+    // Format user message
     const userMessage: StoredMessage = {
       id: `msg_${Date.now()}_u`,
       projectId: project.id,
@@ -242,26 +340,63 @@ export function ChatPane({
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
 
-    // Build context
-    const historySlice = updatedMessages.slice(-MAX_CONTEXT_MESSAGES);
-    const apiMessages: ChatMessage[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      ...historySlice.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
-    ];
+    // Fetch current project files for context
+    const currentFiles = await listFiles(project.id);
+
+    // Build context with System Prompt + Project Files + Compact History
+    const apiMessages = buildAiChatContext({
+      projectFiles: currentFiles,
+      conversationHistory: updatedMessages,
+      openFilePath,
+    });
 
     setIsStreaming(true);
     setStreamingText('');
+    setActiveStreamingPath(null);
+    setActiveStreamingLineCount(0);
     isUserScrolledUpRef.current = false;
     setIsScrolledUp(false);
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    let accumulatedText = '';
+    let accumulatedRawText = '';
     const assistantMsgId = `msg_${Date.now()}_a`;
+
+    // Initialize change applier session for this turn
+    const session = createChangeApplierSession(project.id);
+
+    // Initialize streaming protocol parser
+    const protocolParser = createStreamingProtocolParser(async (event) => {
+      switch (event.type) {
+        case 'fileStart':
+          setActiveStreamingPath(event.path);
+          setActiveStreamingLineCount(1);
+          await session.onFileStart(event.path);
+          break;
+        case 'fileChunk':
+          session.onFileChunk(event.path, event.text);
+          setActiveStreamingLineCount((prev) => prev + (event.text.split('\n').length - 1));
+          break;
+        case 'fileEnd':
+          setActiveStreamingPath(null);
+          await session.onFileEnd(event.path);
+          break;
+        case 'editStart':
+          setActiveStreamingPath(event.path);
+          break;
+        case 'editEnd':
+          setActiveStreamingPath(null);
+          await session.onEdit(event.path, event.blocks);
+          break;
+        case 'delete':
+          await session.onDelete(event.path);
+          break;
+        case 'unterminated':
+          session.onUnterminated(event.tagType, event.path);
+          break;
+      }
+    });
 
     try {
       const stream = streamChat({
@@ -273,38 +408,52 @@ export function ChatPane({
 
       for await (const chunk of stream) {
         if (chunk.text) {
-          accumulatedText += chunk.text;
-          setStreamingText(accumulatedText);
+          accumulatedRawText += chunk.text;
+          setStreamingText(accumulatedRawText);
+          protocolParser.feed(chunk.text);
         }
       }
 
-      if (accumulatedText) {
+      protocolParser.end();
+      const sessionResult = await session.finish();
+
+      if (accumulatedRawText) {
         const assistantMessage: StoredMessage = {
           id: assistantMsgId,
           projectId: project.id,
           role: 'assistant',
-          content: accumulatedText,
+          content: accumulatedRawText,
           createdAt: Date.now(),
           model: activeModel,
           provider: activeProvider.label,
+          undoEntries: sessionResult.undoEntries,
+          undoDisabledReason: sessionResult.undoDisabledReason,
+          incompleteFiles: sessionResult.incompleteFiles.length > 0 ? sessionResult.incompleteFiles : undefined,
+          failedEdits: sessionResult.failedEdits.length > 0 ? sessionResult.failedEdits : undefined,
         };
         await saveProjectMessage(assistantMessage);
         setMessages((prev) => [...prev, assistantMessage]);
       }
     } catch (err: unknown) {
+      protocolParser.end();
+      const sessionResult = await session.finish();
       const errorMsg = err instanceof Error ? err.message : String(err);
 
       if (abortController.signal.aborted) {
         // Saved stopped text
-        if (accumulatedText) {
+        if (accumulatedRawText) {
           const partialMessage: StoredMessage = {
             id: assistantMsgId,
             projectId: project.id,
             role: 'assistant',
-            content: accumulatedText,
+            content: accumulatedRawText,
             createdAt: Date.now(),
             model: activeModel,
             provider: activeProvider.label,
+            undoEntries: sessionResult.undoEntries,
+            undoDisabledReason: sessionResult.undoDisabledReason,
+            incompleteFiles: sessionResult.incompleteFiles.length > 0 ? sessionResult.incompleteFiles : undefined,
+            failedEdits: sessionResult.failedEdits.length > 0 ? sessionResult.failedEdits : undefined,
           };
           await saveProjectMessage(partialMessage);
           setMessages((prev) => [...prev, partialMessage]);
@@ -336,6 +485,8 @@ export function ChatPane({
     } finally {
       setIsStreaming(false);
       setStreamingText('');
+      setActiveStreamingPath(null);
+      setActiveStreamingLineCount(0);
       abortControllerRef.current = null;
     }
   };
@@ -345,12 +496,11 @@ export function ChatPane({
     executeSendRef.current = executeSend;
   });
 
-  // First-open behavior check
+  // First-open auto-start behavior check
   useEffect(() => {
     if (hasCheckedAutoStartRef.current) return;
     if (!activeProvider || !activeModel) return;
 
-    // Check if ready for auto-start
     const checkAutoStart = async () => {
       hasCheckedAutoStartRef.current = true;
       const msgs = await listProjectMessages(project.id);
@@ -386,155 +536,171 @@ export function ChatPane({
     }
   };
 
-  // Missing config condition
+  const handleRetryFailedEdit = (path: string) => {
+    executeSend(
+      `Please resend the changes to ${path} as a full file using <desyra-file path="${path}"> instead of an edit.`
+    );
+  };
+
   const hasValidConfig = Boolean(activeProvider && activeModel && !isLocked);
 
   return (
     <div className="flex flex-col h-full min-h-0 min-w-0 w-full bg-[var(--bg)] border-r border-[var(--border)] overflow-hidden relative">
-      {/* Message List Area with Floating Button */}
+      {/* Message List Area */}
       <div className="relative flex-1 min-h-0 w-full overflow-hidden flex flex-col">
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
           className="flex-1 min-h-0 w-full overflow-x-hidden overflow-y-auto px-3.5 sm:px-4 py-4 space-y-4 sm:space-y-5 text-left [overscroll-behavior-y:contain] [-webkit-overflow-scrolling:touch] [overflow-anchor:auto]"
         >
-        {/* If no valid config & no messages, show EmptyState explaining what is missing + the saved idea */}
-        {messages.length === 0 && !hasValidConfig && (
-          <div className="space-y-4 my-auto py-6">
-            <Card elevated className="p-5 border-[var(--border)]">
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full bg-[rgba(255,107,26,0.12)] border border-[rgba(255,107,26,0.25)] flex items-center justify-center shrink-0 text-[var(--accent)]">
-                  <Lightbulb className="w-4 h-4" />
+          {/* Missing config state */}
+          {messages.length === 0 && !hasValidConfig && (
+            <div className="space-y-4 my-auto py-6">
+              <Card elevated className="p-5 border-[var(--border)]">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-full bg-[rgba(255,107,26,0.12)] border border-[rgba(255,107,26,0.25)] flex items-center justify-center shrink-0 text-[var(--accent)]">
+                    <Lightbulb className="w-4 h-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-xs uppercase tracking-wider font-semibold text-[var(--muted)] mb-1">
+                      Your Saved App Idea
+                    </h3>
+                    <p className="text-xs sm:text-sm text-[var(--text)] whitespace-pre-wrap leading-relaxed">
+                      {project.idea}
+                    </p>
+                  </div>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-xs uppercase tracking-wider font-semibold text-[var(--muted)] mb-1">
-                    Your Saved App Idea
-                  </h3>
-                  <p className="text-xs sm:text-sm text-[var(--text)] whitespace-pre-wrap leading-relaxed">
-                    {project.idea}
-                  </p>
-                </div>
-              </div>
-            </Card>
-
-            {isLocked ? (
-              <Card className="p-5 border-[var(--border)] text-center">
-                <EmptyState
-                  icon={<Lock className="w-6 h-6 text-[var(--warning)]" />}
-                  title="Storage is Locked"
-                  description="Unlock with your passphrase to use your saved AI provider keys and start generating."
-                  action={
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => setIsUnlockModalOpen(true)}
-                    >
-                      Unlock with Passphrase
-                    </Button>
-                  }
-                />
               </Card>
-            ) : (
-              <Card className="p-5 border-[var(--border)] text-center">
-                <EmptyState
-                  icon={<KeyRound className="w-6 h-6 text-[var(--accent)]" />}
-                  title={!activeProvider ? 'No AI Provider Configured' : 'No Model Selected'}
-                  description={
-                    !activeProvider
-                      ? 'Add an API key for Google Gemini, Groq, OpenRouter, or OpenAI in Settings to begin.'
-                      : `Select an active default model for ${activeProvider.label} in Settings.`
-                  }
-                  action={
-                    <Link href="/settings">
-                      <Button variant="primary" size="sm">
-                        Configure in Settings
+
+              {isLocked ? (
+                <Card className="p-5 border-[var(--border)] text-center">
+                  <EmptyState
+                    icon={<Lock className="w-6 h-6 text-[var(--warning)]" />}
+                    title="Storage is Locked"
+                    description="Unlock with your passphrase to use your saved AI provider keys and start generating."
+                    action={
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => setIsUnlockModalOpen(true)}
+                      >
+                        Unlock with Passphrase
                       </Button>
-                    </Link>
-                  }
-                />
-              </Card>
-            )}
-          </div>
-        )}
+                    }
+                  />
+                </Card>
+              ) : (
+                <Card className="p-5 border-[var(--border)] text-center">
+                  <EmptyState
+                    icon={<KeyRound className="w-6 h-6 text-[var(--accent)]" />}
+                    title={!activeProvider ? 'No AI Provider Configured' : 'No Model Selected'}
+                    description={
+                      !activeProvider
+                        ? 'Add an API key for Google Gemini, Groq, OpenRouter, or OpenAI in Settings to begin.'
+                        : `Select an active default model for ${activeProvider.label} in Settings.`
+                    }
+                    action={
+                      <Link href="/settings">
+                        <Button variant="primary" size="sm">
+                          Configure in Settings
+                        </Button>
+                      </Link>
+                    }
+                  />
+                </Card>
+              )}
+            </div>
+          )}
 
-        {/* If valid config exists but 0 messages and project wasn't auto-started (e.g. user returned after adding keys) */}
-        {messages.length === 0 && hasValidConfig && !isStreaming && (
-          <div className="space-y-4 my-auto py-6">
-            <Card elevated className="p-5 border-[var(--border)]">
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full bg-[rgba(255,107,26,0.12)] border border-[rgba(255,107,26,0.25)] flex items-center justify-center shrink-0 text-[var(--accent)]">
-                  <Lightbulb className="w-4 h-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between mb-1">
-                    <h3 className="text-xs uppercase tracking-wider font-semibold text-[var(--muted)]">
+          {/* Valid config but 0 messages */}
+          {messages.length === 0 && hasValidConfig && !isStreaming && (
+            <div className="space-y-4 my-auto py-6">
+              <Card elevated className="p-5 border-[var(--border)]">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-full bg-[rgba(255,107,26,0.12)] border border-[rgba(255,107,26,0.25)] flex items-center justify-center shrink-0 text-[var(--accent)]">
+                    <Lightbulb className="w-4 h-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-xs uppercase tracking-wider font-semibold text-[var(--muted)] mb-1">
                       Your App Specification
                     </h3>
+                    <p className="text-xs sm:text-sm text-[var(--text)] whitespace-pre-wrap leading-relaxed mb-4">
+                      {project.idea}
+                    </p>
+                    <Button
+                      variant="primary"
+                      size="md"
+                      onClick={() => executeSend(project.idea)}
+                      leftIcon={<Play className="w-4 h-4 fill-current" />}
+                    >
+                      Start with my idea
+                    </Button>
                   </div>
-                  <p className="text-xs sm:text-sm text-[var(--text)] whitespace-pre-wrap leading-relaxed mb-4">
-                    {project.idea}
-                  </p>
-                  <Button
-                    variant="primary"
-                    size="md"
-                    onClick={() => executeSend(project.idea)}
-                    leftIcon={<Play className="w-4 h-4 fill-current" />}
-                  >
-                    Start with my idea
-                  </Button>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* Render Saved Messages */}
+          {messages.map((m) => (
+            <MessageItem
+              key={m.id}
+              message={m}
+              onOpenFile={onOpenFile}
+              onRetryEdit={handleRetryFailedEdit}
+              onUndo={handleUndo}
+            />
+          ))}
+
+          {/* Active Streaming Message */}
+          {isStreaming && (
+            <div className="w-full flex flex-col text-left animate-in fade-in duration-100">
+              <div className="flex items-center gap-1.5 mb-1 select-none">
+                <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+              </div>
+              <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
+                {streamingText ? (
+                  <ParsedMessageRenderer
+                    content={streamingText}
+                    isStreaming={true}
+                    activeStreamingPath={activeStreamingPath}
+                    activeStreamingLineCount={activeStreamingLineCount}
+                    onOpenFile={onOpenFile}
+                    onRetryEdit={handleRetryFailedEdit}
+                  />
+                ) : (
+                  <span className="text-[var(--disabled)] italic text-sm">Thinking...</span>
+                )}
+                <span className="inline-block w-1.5 h-3.5 ml-1 bg-[var(--accent)] animate-pulse align-middle" />
+              </div>
+            </div>
+          )}
+
+          {/* Error Banner with Retry */}
+          {lastError && (
+            <div className="p-3.5 rounded-[var(--radius-md)] bg-[rgba(239,68,68,0.1)] border border-[rgba(239,68,68,0.3)] text-xs text-[var(--error)] flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Generation stopped</p>
+                  <p className="mt-0.5 leading-relaxed">{lastError.message}</p>
                 </div>
               </div>
-            </Card>
-          </div>
-        )}
-
-        {/* Render Memoized Messages */}
-        {messages.map((m) => (
-          <MessageItem key={m.id} message={m} />
-        ))}
-
-        {/* Streaming Chunk */}
-        {isStreaming && (
-          <div className="w-full flex flex-col text-left animate-in fade-in duration-100">
-            <div className="flex items-center gap-1.5 mb-1 select-none">
-              <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleRetryLast}
+                leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                className="shrink-0 text-xs"
+              >
+                Retry
+              </Button>
             </div>
-            <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
-              {streamingText ? (
-                <MarkdownRenderer content={streamingText} isStreaming={true} />
-              ) : (
-                <span className="text-[var(--disabled)] italic text-sm">Thinking...</span>
-              )}
-              <span className="inline-block w-1.5 h-3.5 ml-1 bg-[var(--accent)] animate-pulse align-middle" />
-            </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* Error Banner with Retry */}
-        {lastError && (
-          <div className="p-3.5 rounded-[var(--radius-md)] bg-[rgba(239,68,68,0.1)] border border-[rgba(239,68,68,0.3)] text-xs text-[var(--error)] flex items-start justify-between gap-3">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-semibold">Generation stopped</p>
-                <p className="mt-0.5 leading-relaxed">{lastError.message}</p>
-              </div>
-            </div>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleRetryLast}
-              leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
-              className="shrink-0 text-xs"
-            >
-              Retry
-            </Button>
-          </div>
-        )}
-      </div>
-
-      {/* Floating "Jump to latest" button when user scrolled up */}
+        {/* Floating "Jump to latest" button */}
         {isScrolledUp && (
           <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
             <button
@@ -549,7 +715,7 @@ export function ChatPane({
         )}
       </div>
 
-      {/* Composer Section - flex-none, flush with bottom / mobile tabs */}
+      {/* Composer Section */}
       <div className="p-2.5 sm:p-3 bg-[var(--surface)] border-t border-[var(--border)] flex-none w-full">
         <form
           onSubmit={(e) => {
@@ -595,14 +761,13 @@ export function ChatPane({
             )}
           </div>
 
-          {/* Desktop-only helper text */}
           <p className="hidden sm:block text-[11px] text-[var(--disabled)] select-none px-1">
             Enter to send, Shift+Enter for a new line
           </p>
         </form>
       </div>
 
-      {/* Unlock Modal for Passphrase Protected Mode */}
+      {/* Unlock Modal */}
       <UnlockModal
         isOpen={isUnlockModalOpen}
         onClose={() => setIsUnlockModalOpen(false)}

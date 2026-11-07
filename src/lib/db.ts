@@ -44,6 +44,13 @@ export interface StoredModelCache {
   fetchedAt: number;
 }
 
+export interface FileUndoEntry {
+  path: string;
+  action: 'created' | 'updated' | 'deleted';
+  before: string | null;
+  after: string | null;
+}
+
 export interface StoredMessage {
   id: string;
   projectId: string;
@@ -52,6 +59,10 @@ export interface StoredMessage {
   createdAt: number;
   model?: string;
   provider?: string;
+  undoEntries?: FileUndoEntry[];
+  undoDisabledReason?: string;
+  incompleteFiles?: string[];
+  failedEdits?: Array<{ path: string; reason: string }>;
 }
 
 export interface MetaItem {

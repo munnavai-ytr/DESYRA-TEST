@@ -16,7 +16,8 @@ import {
   isSessionLocked,
   type SafeProviderInfo,
 } from '@/lib/keys';
-import { listFiles } from '@/lib/files';
+import { listFiles, getFile } from '@/lib/files';
+import { useProjectFileRevision } from '@/lib/ai/aiFileStore';
 
 export interface IdeLayoutProps {
   initialProject: Project;
@@ -91,30 +92,43 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
       });
   }, [project.id]);
 
+  const fileRevision = useProjectFileRevision(project.id);
+
+  // Sync files whenever project files change (from AI generation, manual edits, or undo)
   useEffect(() => {
     let isMounted = true;
-    Promise.all([listProviders(), listFiles(project.id)])
-      .then(([allProviders, files]) => {
-        if (!isMounted) return;
-        setProviders(allProviders);
-        if (allProviders.length > 0) {
-          const def = allProviders.find((p) => p.isDefault) || allProviders[0];
-          setActiveProvider(def);
-          setActiveModel(def.defaultModel || null);
+    listFiles(project.id).then((files) => {
+      if (!isMounted) return;
+      setFilesCount(files.length);
+
+      setSelectedFile((currentSelected) => {
+        if (!currentSelected && files.length > 0) {
+          // Section 9: When the first AI file arrives in a project with no selected file,
+          // auto-select index.html if present (otherwise the first file) on DESYRA desktop layout only;
+          // on mobile do not switch tabs by itself.
+          const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 768;
+          if (!isMobileViewport) {
+            const indexFile = files.find((f) => f.path === 'index.html');
+            return indexFile || files[0];
+          }
+          return null;
         }
-        setFilesCount(files.length);
-        if (files.length > 0) {
-          setSelectedFile((prev) => prev ?? files[0]);
+
+        // If file is already selected, refresh its content from the loaded files
+        if (currentSelected) {
+          const matching = files.find((f) => f.path === currentSelected.path);
+          if (matching) {
+            return matching;
+          }
         }
-      })
-      .catch((err) => {
-        console.error('Failed to initialize IDE data:', err);
+        return currentSelected;
       });
+    });
 
     return () => {
       isMounted = false;
     };
-  }, [project.id]);
+  }, [project.id, fileRevision]);
 
   // Window resize listener
   useEffect(() => {
@@ -300,6 +314,21 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
     }
   };
 
+  const handleOpenFileFromPath = useCallback(
+    async (path: string) => {
+      const file = await getFile(project.id, path);
+      if (file) {
+        setSelectedFile(file);
+        if (isMobile) {
+          setMobileTab('code');
+        } else {
+          setWorkspaceTab('code');
+        }
+      }
+    },
+    [project.id, isMobile]
+  );
+
   const handleProviderChanged = (provider: SafeProviderInfo, modelId?: string) => {
     setActiveProvider(provider);
     setActiveModel(modelId || provider.defaultModel || null);
@@ -338,6 +367,8 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               project={project}
               activeProvider={activeProvider}
               activeModel={activeModel}
+              openFilePath={selectedFile?.path ?? null}
+              onOpenFile={handleOpenFileFromPath}
               onRefreshProviders={refreshIdeData}
             />
           </div>
@@ -505,6 +536,8 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               project={project}
               activeProvider={activeProvider}
               activeModel={activeModel}
+              openFilePath={selectedFile?.path ?? null}
+              onOpenFile={handleOpenFileFromPath}
               onRefreshProviders={refreshIdeData}
             />
           </div>
