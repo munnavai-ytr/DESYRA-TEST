@@ -1,6 +1,9 @@
 import type { ProjectFile, StoredMessage } from '@/lib/db';
 import type { ChatMessage } from './types';
 import { BUILD_SYSTEM_PROMPT } from './prompts/build';
+import { buildDesignSystemPrompt } from './prompts/designBuild';
+import { MANAGED_DESIGN_FILES } from '@/lib/design/install';
+import type { DesignSpec } from '@/lib/design/types';
 import { parseProtocol } from './fileProtocol';
 
 export const FILE_CONTENT_CHAR_BUDGET = 60000;
@@ -9,6 +12,7 @@ export interface BuildContextParams {
   projectFiles: ProjectFile[];
   conversationHistory: StoredMessage[];
   openFilePath?: string | null;
+  projectDesign?: DesignSpec | null;
 }
 
 /**
@@ -90,21 +94,21 @@ export function buildProjectFilesMessage(
   // 1. Manifest of all files
   const manifestLines = files.map((f) => {
     const byteSize = new Blob([f.content]).size;
+    const isManaged = MANAGED_DESIGN_FILES.includes(f.path);
     const isIncomplete = incompletePaths.includes(f.path);
+    const managedTag = isManaged ? ' [managed by Design Engine; do not edit]' : '';
     const incompleteTag = isIncomplete ? ' [INCOMPLETE: cut off during previous turn]' : '';
-    return `- ${f.path} (${formatFileSize(byteSize)}, ${f.content.split('\n').length} lines)${incompleteTag}`;
+    return `- ${f.path} (${formatFileSize(byteSize)}, ${f.content.split('\n').length} lines)${managedTag}${incompleteTag}`;
   });
 
   let message = `## Current Project Files (Check this list and folder structure before adding or modifying files; never create duplicate/similar files like style.css vs styles.css or app.js vs script.js; update existing files in place):\n${manifestLines.join('\n')}\n\n`;
 
-  // 2. Sort files by priority:
-  // Priority 1: Incomplete files from last turn (need urgent re-sending)
-  // Priority 2: Files touched in last assistant message
-  // Priority 3: Currently open file
-  // Priority 4: Most recently updated files
+  // 2. Sort files by priority (managed files are excluded from full content block)
+  const unmanagedFiles = files.filter((f) => !MANAGED_DESIGN_FILES.includes(f.path));
+
   const priorityMap = new Map<string, number>();
 
-  files.forEach((f) => {
+  unmanagedFiles.forEach((f) => {
     let score = f.updatedAt; // Base recency
     if (openFilePath && f.path === openFilePath) {
       score += 10_000_000_000;
@@ -118,7 +122,7 @@ export function buildProjectFilesMessage(
     priorityMap.set(f.path, score);
   });
 
-  const prioritizedFiles = [...files].sort((a, b) => {
+  const prioritizedFiles = [...unmanagedFiles].sort((a, b) => {
     return (priorityMap.get(b.path) || 0) - (priorityMap.get(a.path) || 0);
   });
 
@@ -183,6 +187,7 @@ export function buildAiChatContext({
   projectFiles,
   conversationHistory,
   openFilePath,
+  projectDesign,
 }: BuildContextParams): ChatMessage[] {
   const touchedInLast = getFilesTouchedInLastAssistantMessage(conversationHistory);
   const incompletePaths = getIncompleteFilesInLastAssistantMessage(conversationHistory);
@@ -192,6 +197,11 @@ export function buildAiChatContext({
     openFilePath,
     incompletePaths
   );
+
+  // System prompt selection
+  const systemPrompt = projectDesign
+    ? buildDesignSystemPrompt(projectDesign)
+    : BUILD_SYSTEM_PROMPT;
 
   // Take the last 20 conversation messages
   const recentHistory = conversationHistory.slice(-20);
@@ -212,7 +222,7 @@ export function buildAiChatContext({
   return [
     {
       role: 'system',
-      content: BUILD_SYSTEM_PROMPT,
+      content: systemPrompt,
     },
     {
       role: 'user',

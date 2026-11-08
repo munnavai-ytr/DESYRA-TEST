@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Settings, ChevronDown, Check, Sparkles } from 'lucide-react';
+import { ArrowLeft, Settings, ChevronDown, Check, Sparkles, Palette } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
 import { Tooltip } from '@/components/ui/tooltip';
 import { useToast } from '@/components/ui/toast';
@@ -13,6 +13,7 @@ import {
   type SafeProviderInfo,
 } from '@/lib/keys';
 import { updateProject } from '@/lib/db';
+import type { DesignSpec } from '@/lib/design/types';
 
 export interface TopBarProps {
   projectId: string;
@@ -21,6 +22,8 @@ export interface TopBarProps {
   activeProvider: SafeProviderInfo | null;
   activeModel: string | null;
   onProviderChanged: (provider: SafeProviderInfo, modelId?: string) => void;
+  projectDesign?: DesignSpec | null;
+  onOpenDesignPanel?: () => void;
 }
 
 export function TopBar({
@@ -30,6 +33,8 @@ export function TopBar({
   activeProvider,
   activeModel,
   onProviderChanged,
+  projectDesign,
+  onOpenDesignPanel,
 }: TopBarProps) {
   const { toast } = useToast();
 
@@ -187,8 +192,24 @@ export function TopBar({
         </div>
       </div>
 
-      {/* Right: Active Model Chip Popover & Settings */}
+      {/* Right: Design Engine, Active Model Chip Popover & Settings */}
       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {onOpenDesignPanel && (
+          <Tooltip content="Design Engine & Theme Controls" position="bottom">
+            <button
+              type="button"
+              onClick={onOpenDesignPanel}
+              className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            >
+              <Palette className="w-3.5 h-3.5 text-[var(--accent)]" />
+              <span className="font-medium text-[var(--text)] hidden sm:inline">Design</span>
+              {projectDesign && (
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0" />
+              )}
+            </button>
+          </Tooltip>
+        )}
+
         <div className="relative" ref={popoverRef}>
           <button
             type="button"

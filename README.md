@@ -1,13 +1,13 @@
-# DESYRA — Premium AI App Builder (Push 6 of 10)
+# DESYRA — Premium AI App Builder (Push 7A of 10)
 
 DESYRA is a premium, precise, dark-themed AI application builder interface.
 
 ## Tech Stack
 - **Framework**: Next.js 15 (App Router) + TypeScript
-- **Styling**: Tailwind CSS v4 + Design Tokens (`src/styles/tokens.css`)
+- **Styling**: Tailwind CSS v4 + Design Tokens (`src/styles/tokens.css`) + Design Engine Managed Tokens (`css/tokens.css`, `css/base.css`, `css/components.css`)
 - **Icons**: `lucide-react`
 - **Client Database**: Dexie (IndexedDB) for client-side persistence
-- **Typography**: Inter (Body), Space Grotesk (Display Headlines), Hind Siliguri (Bengali), JetBrains Mono (Code)
+- **Typography**: Inter (Body), Space Grotesk (Display Headlines), Hind Siliguri / Noto Sans Bengali (Bengali), JetBrains Mono (Code)
 
 ## Design System Tokens
 - **Canvas / Surfaces**:
@@ -81,6 +81,33 @@ Push 6 delivers a free, 100% in-browser, zero-backend live preview engine:
    - **Storage Boundaries**: Simulated `localStorage` and `sessionStorage` persist up to 1 MB total per project (200 KB per value limit). `document.cookie` and `IndexedDB` inside the sandbox emit browser warnings.
    - **Runtime Diagnostic Check**: If the preview iframe runtime does not post `ready` within 5 seconds, an amber warning appears in the console drawer ("Preview runtime did not start. The page may be malformed.").
    - **Copy Diagnostics**: A "Copy diagnostics" button in the Console Drawer and "..." menu generates a sanitized summary containing entry path, file list with byte sizes, builder warnings, and the first 40 lines of the entry and built document (truncated to 4,000 chars, excluding all storage values or keys).
+
+## Design Engine (Push 7A)
+
+Push 7A introduces a deterministic, 100% pure TypeScript Design Engine that guarantees every application built by DESYRA looks premium, accessible, and visually consistent regardless of AI model quality.
+
+1. **Automatic Prompt Classification & Language Detection**:
+   - **Language Detection**: Detects Bengali (`[\u0980-\u09FF]`) vs English prompts.
+   - **Archetype Classification**: Classifies prompts into 15 product archetypes (`landing-marketing`, `portfolio`, `saas-dashboard-admin`, `ecommerce-store`, `food-restaurant-cafe`, `fintech-finance`, `health-fitness`, `education-quiz-learning`, `productivity-tools`, `social-community`, `media-entertainment`, `travel-booking`, `game-arcade`, `blog-news-content`, `general`).
+   - **Bengali Typography**: Automatically pairs Bengali typography (Hind Siliguri, Noto Sans Bengali, Anek Bangla, Baloo Da 2) with English display fonts when Bengali text is detected.
+
+2. **WCAG 2.1 Contrast Guarantees**:
+   - Palette generator ensures strict contrast ratios: `text/bg >= 7.0:1` (AAA), `muted/bg >= 4.5:1` (AA), `onPrimary/primary >= 4.5:1` (AA), and `link/bg >= 4.5:1` (AA).
+   - `ensureContrast` iteratively adjusts lightness to guarantee accessibility across all seed hues.
+
+3. **Managed CSS Files Installation**:
+   - `css/tokens.css`: Pure `:root` CSS variables with dual-mode (`[data-theme="dark"|"light"]`) support.
+   - `css/base.css`: Modern reset, typography, links, focus-visible rings, selection, scrollbars, and reduced motion.
+   - `css/components.css`: Responsive grid, flex cluster, cards, buttons (44px min touch targets), forms, badges, tabs, modals, tables, stats, and skeleton loaders.
+   - Managed files are protected from AI overwrites and marked in the file explorer with a distinct "Design" badge.
+
+4. **Static Design Linter**:
+   - Inspects HTML markup for accessibility (`lang`, `viewport`, single `<h1>`, `img alt`, `input label`), consistency (hardcoded hex colors, font-family, inline styles), and responsiveness.
+   - Generates a 0-100 Design Health Score and powers the **"Fix design issues with AI"** workflow.
+
+5. **Interactive Design Panel Drawer**:
+   - Instant live re-theming without calling AI (toggling presets, seed swatches, mode, roundness, font pairs).
+   - Review tab displaying category scores, detected issues, and one-click AI repair.
 
 ## The IDE Page (`/project/[id]`)
 

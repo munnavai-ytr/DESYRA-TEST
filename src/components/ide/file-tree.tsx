@@ -163,6 +163,16 @@ const TreeRow = React.memo(function TreeRow({
 
         <span className="truncate">{node.name}</span>
 
+        {/* Managed Design Engine badge */}
+        {!isFolder && (node.path === 'css/tokens.css' || node.path === 'css/base.css' || node.path === 'css/components.css') && (
+          <span
+            className="text-[9px] px-1 py-0.2 rounded bg-[var(--accent)]/15 text-[var(--accent)] font-semibold shrink-0 ml-1 border border-[var(--accent)]/30"
+            title="Managed by DESYRA Design Engine"
+          >
+            Design
+          </span>
+        )}
+
         {/* Pulsing orange dot if being written */}
         {!isFolder && isWriting && (
           <span

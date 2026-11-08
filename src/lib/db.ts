@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import { notify } from '@/components/ui/toast';
 import type { ProviderType } from '@/lib/providers';
 import type { EncryptedPayload } from '@/lib/crypto';
+import type { DesignSpec } from '@/lib/design/types';
 
 export interface Project {
   id: string;
@@ -10,6 +11,7 @@ export interface Project {
   createdAt: number;
   updatedAt: number;
   autoStarted?: boolean;
+  design?: DesignSpec;
 }
 
 export interface ProjectFile {

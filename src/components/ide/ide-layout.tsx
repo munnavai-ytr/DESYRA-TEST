@@ -8,9 +8,11 @@ import { FileTree } from './file-tree';
 import { CodeEditor } from './code-editor';
 import { PreviewPane } from './preview-pane';
 import { MobileTabs, type MobileTab } from './mobile-tabs';
+import { DesignPanel } from './design-panel';
 import { Tooltip } from '@/components/ui/tooltip';
 import { IconButton } from '@/components/ui/icon-button';
 import type { Project, ProjectFile } from '@/lib/db';
+import type { DesignSpec } from '@/lib/design/types';
 import {
   listProviders,
   isSessionLocked,
@@ -31,6 +33,8 @@ const DEFAULT_TABLET_RATIO = 0.40;
 
 export function IdeLayout({ initialProject }: IdeLayoutProps) {
   const [project, setProject] = useState<Project>(initialProject);
+  const [projectDesign, setProjectDesign] = useState<DesignSpec | null>(initialProject.design ?? null);
+  const [isDesignPanelOpen, setIsDesignPanelOpen] = useState(false);
 
   // Active Provider & Model state
   const [providers, setProviders] = useState<SafeProviderInfo[]>([]);
@@ -389,6 +393,8 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
         activeProvider={activeProvider}
         activeModel={activeModel}
         onProviderChanged={handleProviderChanged}
+        projectDesign={projectDesign || project.design}
+        onOpenDesignPanel={() => setIsDesignPanelOpen(true)}
       />
 
       {/* Main Body - Viewport Area */}
@@ -408,6 +414,11 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               onOpenFile={handleOpenFileFromPath}
               onRefreshProviders={refreshIdeData}
               onRegisterSendHandler={handleRegisterSendHandler}
+              projectDesign={projectDesign || project.design}
+              onDesignUpdated={(spec) => {
+                setProjectDesign(spec);
+                setProject((p) => ({ ...p, design: spec }));
+              }}
             />
           </div>
 
@@ -583,6 +594,11 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               onOpenFile={handleOpenFileFromPath}
               onRefreshProviders={refreshIdeData}
               onRegisterSendHandler={handleRegisterSendHandler}
+              projectDesign={projectDesign || project.design}
+              onDesignUpdated={(spec) => {
+                setProjectDesign(spec);
+                setProject((p) => ({ ...p, design: spec }));
+              }}
             />
           </div>
 
@@ -638,6 +654,15 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
         fileCount={filesCount}
         hasSelectedFile={Boolean(selectedFile)}
         isHidden={isKeyboardOpen}
+      />
+
+      {/* Design Engine Slide-Over Panel */}
+      <DesignPanel
+        projectId={project.id}
+        projectDesign={projectDesign || project.design}
+        isOpen={isDesignPanelOpen}
+        onClose={() => setIsDesignPanelOpen(false)}
+        onFixWithAi={handleFixWithAi}
       />
     </div>
   );

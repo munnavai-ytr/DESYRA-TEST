@@ -9,6 +9,7 @@ import {
   ChevronUp,
   AlertCircle,
   ShieldAlert,
+  Palette,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -318,6 +319,49 @@ export default function SettingsPage() {
                 }}
                 className="w-4 h-4 rounded border-[var(--border)] text-[var(--accent)] accent-[var(--accent)] focus:ring-[var(--accent)] cursor-pointer"
               />
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Section: Design Engine Preferences */}
+      {!isLoading && (
+        <Card className="p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Palette className="w-4 h-4 text-[var(--accent)]" />
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--text)] uppercase tracking-wider">
+                Design Engine System
+              </h3>
+              <p className="text-xs text-[var(--muted)] mt-0.5">
+                DESYRA automatically generates deterministic CSS tokens, base reset, and premium component primitives for every project.
+              </p>
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-[var(--border)] space-y-3 text-xs text-[var(--muted)]">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="font-medium text-[var(--text)]">Managed CSS files</span>
+                <p className="text-[11px] text-[var(--disabled)]">css/tokens.css, css/base.css, css/components.css</p>
+              </div>
+              <Badge variant="accent" size="sm">Active</Badge>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-[var(--border)] pt-2.5">
+              <div>
+                <span className="font-medium text-[var(--text)]">WCAG 2.1 AA/AAA Contrast Guarantees</span>
+                <p className="text-[11px] text-[var(--disabled)]">Ensures text contrast passes 7:1 (AA) or 4.5:1 (AAA) automatically</p>
+              </div>
+              <Badge variant="accent" size="sm">Guaranteed</Badge>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-[var(--border)] pt-2.5">
+              <div>
+                <span className="font-medium text-[var(--text)]">Bengali &amp; English Typography</span>
+                <p className="text-[11px] text-[var(--disabled)]">Auto-selects Hind Siliguri / Noto Sans Bengali for Bengali prompts</p>
+              </div>
+              <Badge variant="accent" size="sm">Auto-Detect</Badge>
             </div>
           </div>
         </Card>

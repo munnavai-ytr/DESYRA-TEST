@@ -52,6 +52,9 @@ import { formatRelativeTime } from '@/lib/utils';
 import { ParsedMessageRenderer } from '@/components/chat/parsed-message-renderer';
 import { FileOperationCard, type FileOpStatus } from '@/components/chat/file-operation-card';
 import { MarkdownRenderer } from '@/components/chat/markdown-renderer';
+import { classifyIdea } from '@/lib/design/classify';
+import { installDesignSystem, createSpecFromClassification } from '@/lib/design/install';
+import type { DesignSpec } from '@/lib/design/types';
 
 export interface ChatPaneProps {
   project: Project;
@@ -61,6 +64,8 @@ export interface ChatPaneProps {
   onOpenFile?: (path: string) => void;
   onRefreshProviders?: () => void;
   onRegisterSendHandler?: (handler: (prompt: string) => Promise<void>) => void;
+  projectDesign?: DesignSpec | null;
+  onDesignUpdated?: (spec: DesignSpec) => void;
 }
 
 interface MessageItemProps {
@@ -368,6 +373,8 @@ export function ChatPane({
   onOpenFile,
   onRefreshProviders,
   onRegisterSendHandler,
+  projectDesign,
+  onDesignUpdated,
 }: ChatPaneProps) {
   const { toast } = useToast();
 
@@ -615,6 +622,7 @@ export function ChatPane({
       projectFiles: currentFiles,
       conversationHistory: updatedMessages,
       openFilePath,
+      projectDesign: projectDesign || project.design || null,
     });
 
     // 4. Reset streaming state
@@ -921,6 +929,17 @@ export function ChatPane({
 
     // Clear changed files indicator in tree on new prompt
     aiFileStore.clearAllChanged(project.id);
+
+    // Ensure Design System spec is created & installed if missing
+    let currentDesign = projectDesign || project.design;
+    if (!currentDesign) {
+      currentDesign = createSpecFromClassification(cleanText || project.idea || 'General App');
+      await installDesignSystem(project.id, currentDesign, { overwrite: true });
+      await updateProject(project.id, { design: currentDesign });
+      if (onDesignUpdated) {
+        onDesignUpdated(currentDesign);
+      }
+    }
 
     setLastError(null);
     setInputText('');
