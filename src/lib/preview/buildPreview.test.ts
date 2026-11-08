@@ -186,9 +186,21 @@ describe('buildPreview Document Compiler & Fix Push 6.1 Regression Suite', () =>
     ];
 
     const result = buildPreviewDocument(files, 'index.html');
+    // Circular imports should produce NO warning with import maps
     const circularWarn = result.warnings.find((w) => w.type === 'circular_import');
-    expect(circularWarn).toBeDefined();
-    expect(circularWarn?.message).toContain('Circular import');
+    expect(circularWarn).toBeUndefined();
+
+    // Verify import map is generated in head covering all modules
+    expect(result.html).toContain('<script type="importmap">');
+    const importMapMatch = /<script type="importmap">\s*([\s\S]*?)\s*<\/script>/i.exec(result.html);
+    expect(importMapMatch).not.toBeNull();
+
+    const parsedMap = JSON.parse(importMapMatch![1]);
+    expect(parsedMap.imports).toBeDefined();
+    expect(parsedMap.imports['@desyra/a.js']).toBeDefined();
+    expect(parsedMap.imports['@desyra/b.js']).toBeDefined();
+    expect(parsedMap.imports['@desyra/a.js']).toMatch(/^blob:/);
+    expect(parsedMap.imports['@desyra/b.js']).toMatch(/^blob:/);
   });
 
   it('creates head and html wrapper for fragment templates', () => {

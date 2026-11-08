@@ -223,6 +223,9 @@ export function findMissingReferences(
   return Array.from(missingMap.values());
 }
 
+import { MANAGED_DESIGN_FILES } from '@/lib/design/install';
+import type { DesignSpec } from '@/lib/design/types';
+
 export interface CheckCompletenessParams {
   operations?: Array<{
     path: string;
@@ -233,10 +236,13 @@ export interface CheckCompletenessParams {
   incompleteFiles?: string[];
   finishReason?: StreamFinishReason;
   projectFiles: Array<{ path: string; content: string }>;
+  projectDesign?: DesignSpec | null;
 }
 
 /**
  * Pure completeness check called after an assistant turn completes.
+ * Checks for truncated streams, incomplete files, missing referenced files,
+ * and design system compliance when projectDesign is present.
  */
 export function checkCompleteness(params: CheckCompletenessParams): CompletenessIssue[] {
   const issues: CompletenessIssue[] = [];
@@ -287,6 +293,104 @@ export function checkCompleteness(params: CheckCompletenessParams): Completeness
     });
   }
 
+  // 4. Design System Compliance Check (active only when projectDesign exists)
+  if (params.projectDesign) {
+    const spec = params.projectDesign;
+    const fontHref = spec.tokens.googleFontsHref || 'https://fonts.googleapis.com';
+
+    const htmlFiles = params.projectFiles.filter(
+      (f) => f.path.toLowerCase().endsWith('.html') || f.path.toLowerCase().endsWith('.htm')
+    );
+    const cssFiles = params.projectFiles.filter((f) => f.path.toLowerCase().endsWith('.css'));
+
+    // 4.1 HTML head links, Tailwind CDN, and emoji checks
+    for (const file of htmlFiles) {
+      const headMatch = /<head\b[^>]*>([\s\S]*?)<\/head>/i.exec(file.content);
+      if (!headMatch) {
+        issues.push({
+          type: 'design_issue',
+          path: file.path,
+          details: 'Missing <head> section with design system links.',
+        });
+      } else {
+        const headContent = headMatch[1];
+
+        // Check required stylesheets in order:
+        // Google Fonts -> css/tokens.css -> css/base.css -> css/components.css
+        const idxFonts = headContent.indexOf('fonts.googleapis.com');
+        const idxTokens = headContent.search(/\bhref\s*=\s*["'](?:\.\/|\/)?css\/tokens\.css["']/i);
+        const idxBase = headContent.search(/\bhref\s*=\s*["'](?:\.\/|\/)?css\/base\.css["']/i);
+        const idxComponents = headContent.search(/\bhref\s*=\s*["'](?:\.\/|\/)?css\/components\.css["']/i);
+
+        const hasAllLinks = idxFonts !== -1 && idxTokens !== -1 && idxBase !== -1 && idxComponents !== -1;
+        const isCorrectOrder = idxFonts < idxTokens && idxTokens < idxBase && idxBase < idxComponents;
+
+        if (!hasAllLinks || !isCorrectOrder) {
+          issues.push({
+            type: 'design_issue',
+            path: file.path,
+            details:
+              'Missing or out-of-order design system CSS links in <head>. Required in order: Google Fonts, css/tokens.css, css/base.css, css/components.css.',
+          });
+        }
+      }
+
+      // Flag external Tailwind CDN script
+      if (
+        file.content.includes('cdn.tailwindcss.com') ||
+        file.content.includes('@tailwindcss/browser') ||
+        /<script\b[^>]*\bsrc\s*=\s*["'][^"']*tailwind[^"']*["']/i.test(file.content)
+      ) {
+        issues.push({
+          type: 'design_issue',
+          path: file.path,
+          details:
+            'External Tailwind CDN script found while DESYRA Design System is active. Use DESYRA component classes instead.',
+        });
+      }
+
+      // Flag emoji used as icons in buttons or navigation links
+      if (
+        /<(?:button|a|nav)\b[^>]*?>[\s\S]*?(?:[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[🚀⭐🔥💡🎉⚡✨])[\s\S]*?<\/(?:button|a|nav)>/u.test(
+          file.content
+        )
+      ) {
+        issues.push({
+          type: 'design_issue',
+          path: file.path,
+          details: 'Emoji used as button or navigation icon. Use Lucide SVG icons instead.',
+        });
+      }
+
+      // Flag hardcoded colors in inline styles
+      if (/style\s*=\s*["'][^"']*(?:color|background)\s*:\s*(?:#(?:[0-9a-fA-F]{3,4}){1,2}\b|rgb|hsl)[^"']*["']/i.test(file.content)) {
+        issues.push({
+          type: 'design_issue',
+          path: file.path,
+          details: 'Inline style attribute contains hardcoded colors instead of design tokens.',
+        });
+      }
+    }
+
+    // 4.2 Non-managed CSS files hardcoded colors
+    for (const file of cssFiles) {
+      if (MANAGED_DESIGN_FILES.includes(file.path)) continue;
+
+      const colorHexMatches = file.content.match(/#(?:[0-9a-fA-F]{3,4}){1,2}\b/g);
+      const hardcoded = colorHexMatches
+        ? colorHexMatches.filter((c) => !['#fff', '#ffffff', '#000', '#000000'].includes(c.toLowerCase()))
+        : [];
+
+      if (hardcoded.length > 0) {
+        issues.push({
+          type: 'design_issue',
+          path: file.path,
+          details: `Found ${hardcoded.length} hardcoded color hex values (e.g. ${hardcoded.slice(0, 3).join(', ')}). Use DESYRA CSS variables instead.`,
+        });
+      }
+    }
+  }
+
   return issues;
 }
 
@@ -295,7 +399,8 @@ export function checkCompleteness(params: CheckCompletenessParams): Completeness
  */
 export function buildContinueMessage(
   issues: CompletenessIssue[],
-  projectFiles: Array<{ path: string }>
+  projectFiles: Array<{ path: string }>,
+  projectDesign?: DesignSpec | null
 ): string {
   const incompletePaths = Array.from(
     new Set(
@@ -313,6 +418,8 @@ export function buildContinueMessage(
     )
   );
 
+  const designIssues = issues.filter((i) => i.type === 'design_issue');
+
   const incompleteSet = new Set(incompletePaths);
   const existingFilesList =
     projectFiles
@@ -320,18 +427,7 @@ export function buildContinueMessage(
       .filter((p) => !incompleteSet.has(p))
       .join(', ') || '(none)';
 
-  const header = 'Your previous answer was incomplete. Continue the build now.';
-
-  // If truncated without specific incomplete or missing file issues
-  if (incompletePaths.length === 0 && missingPaths.length === 0) {
-    return [
-      header,
-      'Continue exactly where you stopped and finish the remaining files.',
-      `Do not repeat files that are already complete. Existing files: ${existingFilesList}.`,
-      'Keep each file under about 250 lines; split large logic into smaller modules.',
-      'End with a short Markdown summary only.',
-    ].join('\n');
-  }
+  const header = 'Your previous answer was incomplete. Your previous build needs attention. Continue the build and fix the issues now.';
 
   const numberedInstructions: string[] = [];
 
@@ -345,6 +441,41 @@ export function buildContinueMessage(
     numberedInstructions.push(
       `Create these missing files that are referenced but do not exist: ${missingPaths.join(', ')}.`
     );
+  }
+
+  if (designIssues.length > 0) {
+    const fontsHref = projectDesign?.tokens?.googleFontsHref || 'https://fonts.googleapis.com';
+    const linkTagsFullText = `<link rel="stylesheet" href="${fontsHref}">\n<link rel="stylesheet" href="css/tokens.css">\n<link rel="stylesheet" href="css/base.css">\n<link rel="stylesheet" href="css/components.css">`;
+
+    numberedInstructions.push(
+      `In every HTML page's <head>, you MUST include these exact link tags in this exact order:\n\`\`\`html\n${linkTagsFullText}\n\`\`\``
+    );
+    numberedInstructions.push(
+      `Use <desyra-edit> blocks to update existing files instead of rewriting files from scratch.`
+    );
+    numberedInstructions.push(
+      `Remove any Tailwind CDN or external framework scripts (e.g. cdn.tailwindcss.com). Replace all utility/Tailwind classes with DESYRA component classes (e.g. .btn, .card, .input, .badge, .navbar) and CSS variables from tokens.css.`
+    );
+    numberedInstructions.push(
+      `Replace any emoji icons used in buttons, navigation, or UI controls with Lucide SVG icons (e.g. <i data-lucide="..."></i>).`
+    );
+    numberedInstructions.push(
+      `Replace any hardcoded colors in custom CSS or inline styles with DESYRA CSS variables (e.g. var(--color-primary), var(--color-bg), var(--color-surface), var(--color-text)).`
+    );
+    numberedInstructions.push(
+      `CRITICAL: Do NOT modify or recreate managed files (css/tokens.css, css/base.css, css/components.css); they are managed by the Design Engine.`
+    );
+  }
+
+  // If truncated without specific incomplete, missing, or design issues
+  if (incompletePaths.length === 0 && missingPaths.length === 0 && designIssues.length === 0) {
+    return [
+      header,
+      'Continue exactly where you stopped and finish the remaining files.',
+      `Do not repeat files that are already complete. Existing files: ${existingFilesList}.`,
+      'Keep each file under about 250 lines; split large logic into smaller modules.',
+      'End with a short Markdown summary only.',
+    ].join('\n');
   }
 
   numberedInstructions.push(

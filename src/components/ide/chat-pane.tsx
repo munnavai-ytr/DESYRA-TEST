@@ -28,11 +28,13 @@ import {
   listProjectMessages,
   saveProjectMessage,
   updateProject,
+  getProject,
   getAutoContinueEnabled,
   type StoredMessage,
   type Project,
   type CompletenessIssue,
 } from '@/lib/db';
+import type { DesignSpec } from '@/lib/design/types';
 import { listFiles } from '@/lib/files';
 import {
   streamChat,
@@ -52,9 +54,13 @@ import { formatRelativeTime } from '@/lib/utils';
 import { ParsedMessageRenderer } from '@/components/chat/parsed-message-renderer';
 import { FileOperationCard, type FileOpStatus } from '@/components/chat/file-operation-card';
 import { MarkdownRenderer } from '@/components/chat/markdown-renderer';
-import { classifyIdea } from '@/lib/design/classify';
-import { installDesignSystem, createSpecFromClassification } from '@/lib/design/install';
-import type { DesignSpec } from '@/lib/design/types';
+import {
+  installDesignSystem,
+  createSpecFromClassification,
+  ensureProjectDesign,
+  extractDesignSpec,
+  MANAGED_DESIGN_FILES,
+} from '@/lib/design/install';
 
 export interface ChatPaneProps {
   project: Project;
@@ -153,12 +159,12 @@ const MessageItem = React.memo(
           />
         </div>
 
-        {/* Incomplete Build Warning Card */}
+        {/* Incomplete Build / Needs Attention Warning Card */}
         {!isDismissed && message.completenessIssues && message.completenessIssues.length > 0 && (
           <div className="mt-3 p-3 rounded-[var(--radius-md)] bg-[var(--surface)] border border-[rgba(245,158,11,0.3)] shadow-xs">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--warning)] mb-2">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-              <span>Build may be incomplete</span>
+              <span>Needs attention</span>
             </div>
             <ul className="space-y-1 text-xs text-[var(--muted)] mb-3 pl-1">
               {message.completenessIssues.slice(0, 6).map((issue, idx) => {
@@ -176,6 +182,17 @@ const MessageItem = React.memo(
                       <span className="text-[var(--warning)] leading-none mt-1">•</span>
                       <span>
                         <code className="font-mono text-[var(--text)]">{issue.path}</code> (cut off during write)
+                      </span>
+                    </li>
+                  );
+                }
+                if (issue.type === 'design_issue') {
+                  return (
+                    <li key={idx} className="flex items-start gap-1.5">
+                      <span className="text-[var(--warning)] leading-none mt-1">•</span>
+                      <span>
+                        {issue.path && <code className="font-mono text-[var(--text)] mr-1">{issue.path}</code>}
+                        {issue.details || 'Design system issue detected'}
                       </span>
                     </li>
                   );
@@ -219,9 +236,14 @@ const MessageItem = React.memo(
           </div>
         )}
 
-        {/* Message Footer with Timestamp, Tokens, and Finish Reason Notes */}
+        {/* Message Footer with Timestamp, Design Chip, Tokens, and Finish Reason Notes */}
         <div className="flex items-center flex-wrap gap-2 mt-1.5 px-0.5 text-[10px] text-[var(--disabled)] select-none">
           <span>{formatRelativeTime(message.createdAt)}</span>
+          {message.promptKind === 'design' && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] font-mono">
+              Design: {message.designSpecId ? message.designSpecId.replace('/', ' / ') : 'active'}
+            </span>
+          )}
           {message.completionTokens !== undefined && (
             <span>· {message.completionTokens.toLocaleString()} tokens</span>
           )}
@@ -249,7 +271,9 @@ const MessageItem = React.memo(
     prev.message.content === next.message.content &&
     prev.message.undoEntries === next.message.undoEntries &&
     prev.message.completenessIssues === next.message.completenessIssues &&
-    prev.message.finishReason === next.message.finishReason
+    prev.message.finishReason === next.message.finishReason &&
+    prev.message.promptKind === next.message.promptKind &&
+    prev.message.designSpecId === next.message.designSpecId
 );
 
 export interface StreamingFileOperation {
@@ -592,13 +616,26 @@ export function ChatPane({
   const runTurn = async (
     userPrompt: string,
     historyMessages: StoredMessage[],
-    signal: AbortSignal
+    signal: AbortSignal,
+    designSpec?: DesignSpec | null
   ): Promise<{
     success: boolean;
     assistantMessage?: StoredMessage;
     issues: CompletenessIssue[];
     aborted: boolean;
   }> => {
+    // Resolve design explicitly: passed designSpec, or fallback to database lookup
+    let resolvedDesign: DesignSpec | null = designSpec ? extractDesignSpec(designSpec) : null;
+    if (!resolvedDesign) {
+      const dbProj = await getProject(project.id);
+      resolvedDesign = extractDesignSpec(dbProj?.design);
+    }
+
+    const promptKind: 'design' | 'basic' = resolvedDesign ? 'design' : 'basic';
+    const designSpecId = resolvedDesign
+      ? `${resolvedDesign.archetypeId}/${resolvedDesign.presetId}`
+      : undefined;
+
     // 1. Format and save user message
     const userMessage: StoredMessage = {
       id: `msg_${Date.now()}_u`,
@@ -622,7 +659,7 @@ export function ChatPane({
       projectFiles: currentFiles,
       conversationHistory: updatedMessages,
       openFilePath,
-      projectDesign: projectDesign || project.design || null,
+      projectDesign: resolvedDesign,
     });
 
     // 4. Reset streaming state
@@ -798,6 +835,7 @@ export function ChatPane({
           incompleteFiles: sessionResult.incompleteFiles,
           finishReason: lastFinishReason,
           projectFiles: latestFiles,
+          projectDesign: resolvedDesign,
         });
 
         const assistantMessage: StoredMessage = {
@@ -808,6 +846,8 @@ export function ChatPane({
           createdAt: Date.now(),
           model: activeModel || undefined,
           provider: activeProvider?.label,
+          promptKind,
+          designSpecId,
           undoEntries: sessionResult.undoEntries,
           undoDisabledReason: sessionResult.undoDisabledReason,
           incompleteFiles: sessionResult.incompleteFiles.length > 0 ? sessionResult.incompleteFiles : undefined,
@@ -845,6 +885,7 @@ export function ChatPane({
             incompleteFiles: sessionResult.incompleteFiles,
             finishReason: 'interrupted',
             projectFiles: latestFiles,
+            projectDesign: resolvedDesign,
           });
 
           const partialMessage: StoredMessage = {
@@ -855,6 +896,8 @@ export function ChatPane({
             createdAt: Date.now(),
             model: activeModel || undefined,
             provider: activeProvider?.label,
+            promptKind,
+            designSpecId,
             undoEntries: sessionResult.undoEntries,
             undoDisabledReason: sessionResult.undoDisabledReason,
             incompleteFiles: sessionResult.incompleteFiles.length > 0 ? sessionResult.incompleteFiles : undefined,
@@ -930,14 +973,30 @@ export function ChatPane({
     // Clear changed files indicator in tree on new prompt
     aiFileStore.clearAllChanged(project.id);
 
-    // Ensure Design System spec is created & installed if missing
-    let currentDesign = projectDesign || project.design;
-    if (!currentDesign) {
-      currentDesign = createSpecFromClassification(cleanText || project.idea || 'General App');
-      await installDesignSystem(project.id, currentDesign, { overwrite: true });
-      await updateProject(project.id, { design: currentDesign });
-      if (onDesignUpdated) {
-        onDesignUpdated(currentDesign);
+    // Resolve designForTurn ONCE:
+    // Existing project.design from database, or freshly created and installed spec
+    const dbProj = await getProject(project.id);
+    let designForTurn: DesignSpec | null =
+      extractDesignSpec(dbProj?.design) ||
+      extractDesignSpec(projectDesign) ||
+      extractDesignSpec(project.design);
+
+    if (!designForTurn) {
+      const existingHistory = await listProjectMessages(project.id);
+      const existingFiles = await listFiles(project.id);
+      const isPre7AProject =
+        existingHistory.length > 0 ||
+        existingFiles.some((f) => !MANAGED_DESIGN_FILES.includes(f.path));
+
+      if (!isPre7AProject) {
+        const { spec } = await ensureProjectDesign(
+          project.id,
+          cleanText || project.idea || 'General App'
+        );
+        designForTurn = spec;
+        if (onDesignUpdated) {
+          onDesignUpdated(spec);
+        }
       }
     }
 
@@ -953,7 +1012,12 @@ export function ChatPane({
 
     try {
       const currentHistory = await listProjectMessages(project.id);
-      const initialTurn = await runTurn(cleanText, currentHistory, abortController.signal);
+      const initialTurn = await runTurn(
+        cleanText,
+        currentHistory,
+        abortController.signal,
+        designForTurn
+      );
 
       if (!initialTurn.success || initialTurn.aborted || !initialTurn.assistantMessage) {
         return;
@@ -977,10 +1041,15 @@ export function ChatPane({
           setAutoContinueStatus(`Auto-continue ${round}/3`);
 
           const currentFiles = await listFiles(project.id);
-          const continuePrompt = buildContinueMessage(currentIssues, currentFiles);
+          const continuePrompt = buildContinueMessage(currentIssues, currentFiles, designForTurn);
           const historyForRound = await listProjectMessages(project.id);
 
-          const roundTurn = await runTurn(continuePrompt, historyForRound, abortController.signal);
+          const roundTurn = await runTurn(
+            continuePrompt,
+            historyForRound,
+            abortController.signal,
+            designForTurn
+          );
 
           if (!roundTurn.success || roundTurn.aborted || !roundTurn.assistantMessage) {
             break;
@@ -1019,7 +1088,12 @@ export function ChatPane({
   const handleContinueBuild = async (msg: StoredMessage) => {
     if (!msg.completenessIssues || msg.completenessIssues.length === 0) return;
     const currentFiles = await listFiles(project.id);
-    const continuePrompt = buildContinueMessage(msg.completenessIssues, currentFiles);
+    const dbProj = await getProject(project.id);
+    const design =
+      extractDesignSpec(dbProj?.design) ||
+      extractDesignSpec(projectDesign) ||
+      extractDesignSpec(project.design);
+    const continuePrompt = buildContinueMessage(msg.completenessIssues, currentFiles, design);
     executeSend(continuePrompt);
   };
 

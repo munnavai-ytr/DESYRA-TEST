@@ -109,6 +109,12 @@ Push 7A introduces a deterministic, 100% pure TypeScript Design Engine that guar
    - Instant live re-theming without calling AI (toggling presets, seed swatches, mode, roundness, font pairs).
    - Review tab displaying category scores, detected issues, and one-click AI repair.
 
+6. **Fix Push 7A.1 Engine Hardening**:
+   - **Fix A (Design Prompt Flow)**: Every turn (`initialTurn`, auto-continue, continue build, fix design) receives the explicit resolved `designSpec`. Order guarantee: `create spec -> install managed files (await) -> save project.design (await) -> build context -> call provider`. Messages record `promptKind: 'design' | 'basic'` and `designSpecId` displayed as muted footer chips and included in diagnostics.
+   - **Fix B (Design Completeness Safety Net)**: Extended completeness verification detects missing font links, missing managed stylesheets in `<head>`, Tailwind CDN scripts, emojis as icons, and hardcoded colors, generating actionable `<desyra-edit>` continuation instructions.
+   - **Fix C (ES Module Import Maps)**: Replaced dependency-ordered blob rewrites with virtual bare specifiers (`@desyra/<path>`) and `<script type="importmap">`, supporting cyclic imports natively without topological warnings.
+   - **Fix D (Preview Frame Layout Engine)**: Pure deterministic `computeFrameLayout` scaling Phone (`390px`), Tablet (`768px`), and Desktop (`1280px`) with inset borders, zero margins, no outer white artifacting, bottom edge aligned with stage bottom, and an active `"Scaled N%"` indicator.
+
 ## The IDE Page (`/project/[id]`)
 
 Push 4 establishes the core workspace layout:

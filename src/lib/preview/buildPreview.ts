@@ -299,34 +299,113 @@ export function fileToDataUri(path: string, content: string): string {
 }
 
 /**
- * Parses static and dynamic relative imports from a JS module content.
+ * Rewrites relative and project imports/exports in JavaScript module code to virtual specifiers (@desyra/...).
+ * Handles static import/export ... from, side-effect imports, and string-literal dynamic imports.
+ * Leaves bare package specifiers and https:// imports untouched.
+ * Warns on dynamic import() with non-literal argument and on import.meta.url.
  */
-export function extractRelativeImports(jsCode: string): string[] {
-  const imports: string[] = [];
-  const staticRegex = /(?:import|export)\s+(?:[\w*\s{},]*\s+from\s+)?['"](\.[^'"]+)['"]/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = staticRegex.exec(jsCode)) !== null) {
-    imports.push(match[1]);
+export function rewriteModuleSpecifiers(
+  jsCode: string,
+  filePath: string,
+  allFiles: Array<{ path: string; content: string }>,
+  warnings: PreviewWarning[]
+): string {
+  // Warn on dynamic import with non-literal argument
+  // e.g. import(foo) or import('prefix/' + bar)
+  const nonLiteralDynamicRegex = /\bimport\s*\(\s*(?!['"`])([a-zA-Z0-9_$.+([\]\s]+)\)/g;
+  let nonLitMatch: RegExpExecArray | null;
+  while ((nonLitMatch = nonLiteralDynamicRegex.exec(jsCode)) !== null) {
+    warnings.push({
+      type: 'parse_error',
+      message: `Dynamic import() with non-literal argument in "${filePath}" cannot be rewritten.`,
+      file: filePath,
+    });
   }
 
-  const dynamicRegex = /import\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
-  while ((match = dynamicRegex.exec(jsCode)) !== null) {
-    imports.push(match[1]);
+  // Warn on import.meta.url usage
+  if (/\bimport\.meta\.url\b/.test(jsCode)) {
+    warnings.push({
+      type: 'parse_error',
+      message: `import.meta.url used in "${filePath}". Note that modules run from blob: URLs in preview.`,
+      file: filePath,
+    });
   }
 
-  return imports;
+  const resolveToVirtual = (specifier: string): string => {
+    const trimmed = specifier.trim();
+    // Only rewrite relative or root-relative project paths
+    if (!trimmed.startsWith('.') && !trimmed.startsWith('/')) {
+      return specifier; // Bare specifier or external URL, leave untouched
+    }
+
+    let resolved = resolveRelativePath(filePath, trimmed);
+    if (!resolved.endsWith('.js') && !resolved.endsWith('.mjs') && !resolved.endsWith('.json')) {
+      const candidates = [`${resolved}.js`, `${resolved}.mjs`, `${resolved}.json`];
+      for (const cand of candidates) {
+        if (allFiles.some((f) => f.path === cand)) {
+          resolved = cand;
+          break;
+        }
+      }
+    }
+
+    const cleanResolved = resolved.replace(/^\/+/, '');
+    return `@desyra/${cleanResolved}`;
+  };
+
+  let rewritten = jsCode;
+
+  // 1. Static imports / exports with from:
+  // e.g. import { x } from './ui.js' or export * from './sub.js'
+  rewritten = rewritten.replace(
+    /((?:import|export)\s+(?:[\w*\s{},]*\s+from\s+))(['"])([^'"]+)\2/g,
+    (full, prefix, quote, spec) => {
+      const virtual = resolveToVirtual(spec);
+      return `${prefix}${quote}${virtual}${quote}`;
+    }
+  );
+
+  // 2. Side-effect imports:
+  // e.g. import './setup.js' or import "./setup.js";
+  rewritten = rewritten.replace(
+    /(\bimport\s+)(['"])([^'"]+)\2(\s*;?)/g,
+    (full, prefix, quote, spec, suffix) => {
+      const virtual = resolveToVirtual(spec);
+      return `${prefix}${quote}${virtual}${quote}${suffix}`;
+    }
+  );
+
+  // 3. String-literal dynamic imports:
+  // e.g. import('./sub.js') or import("./sub.js")
+  rewritten = rewritten.replace(
+    /(\bimport\s*\(\s*)(['"])([^'"]+)\2(\s*\))/g,
+    (full, prefix, quote, spec, suffix) => {
+      const virtual = resolveToVirtual(spec);
+      return `${prefix}${quote}${virtual}${quote}${suffix}`;
+    }
+  );
+
+  return rewritten;
+}
+
+export interface ProcessModulesResult {
+  moduleBlobMap: Map<string, string>;
+  importMap: { imports: Record<string, string> };
+  importMapJson: string;
 }
 
 /**
- * Rewrites ES Module relative import specifiers in dependency order to blob: URLs.
+ * Rewrites each local ES module into virtual bare specifiers (@desyra/...)
+ * and generates ONE blob URL per module mapped in a <script type="importmap">.
+ * Resolves circular imports natively in the browser without dependency ordering.
  */
-export function processModulesToBlobUrls(
+export function processModulesWithImportMap(
   files: Array<{ path: string; content: string }>,
   warnings: PreviewWarning[],
   createdBlobUrls: string[]
-): Map<string, string> {
+): ProcessModulesResult {
   const moduleBlobMap = new Map<string, string>();
+  const importsRecord: Record<string, string> = {};
 
   const createBlobUrl =
     typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
@@ -340,136 +419,38 @@ export function processModulesToBlobUrls(
       f.path.endsWith('.cjs')
   );
 
-  const dependencyGraph = new Map<string, Set<string>>();
-
   for (const jsFile of jsFiles) {
-    const rawImports = extractRelativeImports(jsFile.content);
-    const resolvedDeps = new Set<string>();
-
-    for (const raw of rawImports) {
-      let resolved = resolveRelativePath(jsFile.path, raw);
-      if (!resolved.endsWith('.js') && !resolved.endsWith('.mjs') && !resolved.endsWith('.json')) {
-        const candidate = `${resolved}.js`;
-        if (files.some((f) => f.path === candidate)) {
-          resolved = candidate;
-        }
-      }
-      resolvedDeps.add(resolved);
-    }
-    dependencyGraph.set(jsFile.path, resolvedDeps);
-  }
-
-  const visited = new Set<string>();
-  const recursionStack = new Set<string>();
-  const circularPairs = new Set<string>();
-
-  function detectCycle(current: string) {
-    visited.add(current);
-    recursionStack.add(current);
-
-    const deps = dependencyGraph.get(current);
-    if (deps) {
-      for (const dep of deps) {
-        if (!visited.has(dep)) {
-          detectCycle(dep);
-        } else if (recursionStack.has(dep)) {
-          const pairKey = [current, dep].sort().join('<->');
-          if (!circularPairs.has(pairKey)) {
-            circularPairs.add(pairKey);
-            warnings.push({
-              type: 'circular_import',
-              message: `Circular import between "${current}" and "${dep}" is not supported in the preview.`,
-              file: current,
-            });
-          }
-        }
-      }
-    }
-
-    recursionStack.delete(current);
-  }
-
-  for (const jsFile of jsFiles) {
-    if (!visited.has(jsFile.path)) {
-      detectCycle(jsFile.path);
-    }
-  }
-
-  const order: string[] = [];
-  const processed = new Set<string>();
-
-  function topoVisit(file: string, stack: Set<string>) {
-    if (processed.has(file)) return;
-    if (stack.has(file)) return;
-    stack.add(file);
-
-    const deps = dependencyGraph.get(file);
-    if (deps) {
-      for (const dep of deps) {
-        topoVisit(dep, stack);
-      }
-    }
-
-    stack.delete(file);
-    processed.add(file);
-    order.push(file);
-  }
-
-  for (const jsFile of jsFiles) {
-    topoVisit(jsFile.path, new Set());
-  }
-
-  for (const filePath of order) {
-    const fileItem = jsFiles.find((f) => f.path === filePath);
-    if (!fileItem) continue;
-
-    let rewrittenCode = fileItem.content;
-    const deps = dependencyGraph.get(filePath);
-
-    if (deps && deps.size > 0) {
-      rewrittenCode = rewrittenCode.replace(
-        /((?:import|export)\s+(?:[\w*\s{},]*\s+from\s+)?)(['"])(\.[^'"]+)\2/g,
-        (full: string, prefix: string, quote: string, specifier: string) => {
-          let resolved = resolveRelativePath(filePath, specifier);
-          if (!resolved.endsWith('.js') && !resolved.endsWith('.mjs') && !resolved.endsWith('.json')) {
-            const candidate = `${resolved}.js`;
-            if (moduleBlobMap.has(candidate)) {
-              resolved = candidate;
-            }
-          }
-          const blobUrl = moduleBlobMap.get(resolved);
-          if (blobUrl) {
-            return `${prefix}${quote}${blobUrl}${quote}`;
-          }
-          return full;
-        }
-      );
-
-      rewrittenCode = rewrittenCode.replace(
-        /(import\s*\(\s*)(['"])(\.[^'"]+)\2(\s*\))/g,
-        (full: string, prefix: string, quote: string, specifier: string, suffix: string) => {
-          let resolved = resolveRelativePath(filePath, specifier);
-          if (!resolved.endsWith('.js') && !resolved.endsWith('.mjs') && !resolved.endsWith('.json')) {
-            const candidate = `${resolved}.js`;
-            if (moduleBlobMap.has(candidate)) {
-              resolved = candidate;
-            }
-          }
-          const blobUrl = moduleBlobMap.get(resolved);
-          if (blobUrl) {
-            return `${prefix}${quote}${blobUrl}${quote}${suffix}`;
-          }
-          return full;
-        }
-      );
-    }
-
+    const rewrittenCode = rewriteModuleSpecifiers(jsFile.content, jsFile.path, files, warnings);
     const blobUrl = createBlobUrl(rewrittenCode);
     createdBlobUrls.push(blobUrl);
-    moduleBlobMap.set(filePath, blobUrl);
+
+    moduleBlobMap.set(jsFile.path, blobUrl);
+
+    const cleanPath = jsFile.path.replace(/^\/+/, '');
+    const virtualSpecifier = `@desyra/${cleanPath}`;
+    importsRecord[virtualSpecifier] = blobUrl;
   }
 
-  return moduleBlobMap;
+  const importMap = { imports: importsRecord };
+  const importMapJson = Object.keys(importsRecord).length > 0 ? JSON.stringify(importMap, null, 2) : '';
+
+  return {
+    moduleBlobMap,
+    importMap,
+    importMapJson,
+  };
+}
+
+/**
+ * Legacy wrapper: Rewrites ES Module relative import specifiers to blob URLs.
+ */
+export function processModulesToBlobUrls(
+  files: Array<{ path: string; content: string }>,
+  warnings: PreviewWarning[],
+  createdBlobUrls: string[]
+): Map<string, string> {
+  const result = processModulesWithImportMap(files, warnings, createdBlobUrls);
+  return result.moduleBlobMap;
 }
 
 /**
@@ -537,8 +518,8 @@ export function buildPreviewDocument(
   usedFiles.push(entryFile.path);
   let documentHtml = entryFile.content;
 
-  // 3. Process ES modules to blob URLs
-  const moduleBlobMap = processModulesToBlobUrls(files, warnings, blobUrls);
+  // 3. Process ES modules to blob URLs with import map
+  const { moduleBlobMap, importMap, importMapJson } = processModulesWithImportMap(files, warnings, blobUrls);
 
   // 4. Tokenize non-markup regions into placeholders
   // Regions to protect: comments, <script>, <style>, <textarea>, <title>
@@ -640,21 +621,7 @@ export function buildPreviewDocument(
 
       // C. Inline module script
       if (isModule && inlineContent.trim()) {
-        let rewritten = inlineContent;
-        rewritten = rewritten.replace(
-          /((?:import|export)\s+(?:[\w*\s{},]*\s+from\s+)?)(['"])(\.[^'"]+)\2/g,
-          (full: string, prefix: string, quote: string, specifier: string) => {
-            let resolved = resolveRelativePath(entryFile!.path, specifier);
-            if (!resolved.endsWith('.js') && !resolved.endsWith('.mjs')) {
-              const candidate = `${resolved}.js`;
-              if (moduleBlobMap.has(candidate)) {
-                resolved = candidate;
-              }
-            }
-            const blobUrl = moduleBlobMap.get(resolved);
-            return blobUrl ? `${prefix}${quote}${blobUrl}${quote}` : full;
-          }
-        );
+        const rewritten = rewriteModuleSpecifiers(inlineContent, entryFile!.path, files, warnings);
         const safeInline = rewritten.replace(/<\/script/gi, () => '<\\/script');
         const tag = `<script${attrs ? ' ' + attrs : ''}>\n${safeInline}\n</script>`;
         return createPlaceholder(tag);
@@ -801,9 +768,14 @@ export function buildPreviewDocument(
   const runtimeCode = generatePreviewRuntime(nonce, options.initialStorage || {});
   const safeRuntimeScript = runtimeCode.replace(/<\/script/gi, () => '<\\/script');
 
+  const importMapTag = importMapJson
+    ? `  <script type="importmap">\n${importMapJson}\n  </script>\n`
+    : '';
+
   const headInjections =
     `  <meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">\n` +
-    `  <script data-desyra-runtime="true">${safeRuntimeScript}</script>\n`;
+    `  <script data-desyra-runtime="true">${safeRuntimeScript}</script>\n` +
+    importMapTag;
 
   const headMatch = /<head\b[^>]*>/i.exec(documentHtml);
   if (headMatch) {

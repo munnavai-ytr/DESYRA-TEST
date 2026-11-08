@@ -202,4 +202,73 @@ describe('buildContinueMessage format', () => {
     expect(msg).toContain('Continue exactly where you stopped');
     expect(msg).toContain('index.html, style.css');
   });
+
+  it('detects design issues when projectDesign is present: missing links, Tailwind CDN, emojis, hardcoded colors', () => {
+    const mockSpec: any = {
+      archetypeId: 'saas',
+      presetId: 'minimal',
+      tokens: {
+        googleFontsHref: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap',
+      },
+    };
+
+    const files = [
+      {
+        path: 'index.html',
+        content: `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <script src="https://cdn.tailwindcss.com"></script>
+              <link rel="stylesheet" href="custom.css">
+            </head>
+            <body>
+              <button>🚀 Launch</button>
+            </body>
+          </html>
+        `,
+      },
+      {
+        path: 'custom.css',
+        content: `
+          .custom { color: #ff5500; background: #223344; }
+        `,
+      },
+    ];
+
+    const issues = checkCompleteness({
+      projectFiles: files,
+      projectDesign: mockSpec,
+    });
+
+    const designIssues = issues.filter((i) => i.type === 'design_issue');
+    expect(designIssues.length).toBeGreaterThanOrEqual(3);
+
+    // Missing design system links in head
+    const linkIssue = designIssues.find((i) => i.details?.includes('design system CSS links'));
+    expect(linkIssue).toBeDefined();
+
+    // Tailwind CDN detected
+    const tailwindIssue = designIssues.find((i) => i.details?.includes('Tailwind CDN'));
+    expect(tailwindIssue).toBeDefined();
+
+    // Emoji icon detected
+    const emojiIssue = designIssues.find((i) => i.details?.includes('Emoji used as button'));
+    expect(emojiIssue).toBeDefined();
+
+    // Hardcoded colors in custom.css
+    const colorIssue = designIssues.find((i) => i.path === 'custom.css' && i.details?.includes('hardcoded color'));
+    expect(colorIssue).toBeDefined();
+
+    // Verify buildContinueMessage output
+    const continueMsg = buildContinueMessage(designIssues, [{ path: 'index.html' }, { path: 'custom.css' }], mockSpec);
+    expect(continueMsg).toContain('Your previous build needs attention');
+    expect(continueMsg).toContain('<link rel="stylesheet" href="css/tokens.css">');
+    expect(continueMsg).toContain('<link rel="stylesheet" href="css/base.css">');
+    expect(continueMsg).toContain('<link rel="stylesheet" href="css/components.css">');
+    expect(continueMsg).toContain('<desyra-edit>');
+    expect(continueMsg).toContain('Replace all utility/Tailwind classes with DESYRA component classes');
+    expect(continueMsg).toContain('Lucide SVG icons');
+    expect(continueMsg).toContain('CRITICAL: Do NOT modify or recreate managed files');
+  });
 });

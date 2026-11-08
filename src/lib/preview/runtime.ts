@@ -43,6 +43,11 @@ export function generatePreviewRuntime(nonce: string, initialStorage: Record<str
     }
   }
 
+  // Check import map support for ES modules
+  if (typeof HTMLScriptElement !== 'undefined' && HTMLScriptElement.supports && !HTMLScriptElement.supports('importmap')) {
+    console.warn('[DESYRA Preview] This browser does not support import maps. ES module projects cannot run in the preview.');
+  }
+
   // Safe circular-reference serializer with truncation
   function safeSerialize(val, depth, seen) {
     if (depth === undefined) depth = 0;

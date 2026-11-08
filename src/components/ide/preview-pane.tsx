@@ -37,6 +37,7 @@ import {
   clearPreviewStorage,
   getPreviewStorageBytes,
   MAX_PREVIEW_STORAGE_TOTAL_BYTES,
+  listProjectMessages,
 } from '@/lib/db';
 import {
   buildPreviewDocument,
@@ -44,6 +45,7 @@ import {
   type BuildPreviewResult,
   type BuildPreviewSourceMap,
 } from '@/lib/preview/buildPreview';
+import { computeFrameLayout } from '@/lib/preview/layout';
 import { useProjectFileRevision, useIsAnyFileWriting } from '@/lib/ai/aiFileStore';
 
 export type DeviceMode = 'mobile' | 'tablet' | 'desktop';
@@ -261,26 +263,26 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
   const [copiedConsole, setCopiedConsole] = useState<boolean>(false);
   const [storageBytes, setStorageBytes] = useState<number>(0);
 
-  // Virtual scaling: container measurement
-  const frameContainerRef = useRef<HTMLDivElement>(null);
+  // Virtual scaling: stage measurement and layout
+  const stageRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [containerDimensions, setContainerDimensions] = useState<{ width: number; height: number }>({
+  const [stageDimensions, setStageDimensions] = useState<{ width: number; height: number }>({
     width: 0,
     height: 0,
   });
 
   const fileRevision = useProjectFileRevision(projectId);
 
-  // Update container dimensions on resize
+  // Update stage dimensions on resize (measuring only stage element)
   useEffect(() => {
-    if (!frameContainerRef.current) return;
-    const el = frameContainerRef.current;
+    if (!stageRef.current) return;
+    const el = stageRef.current;
 
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        setContainerDimensions({
-          width: entry.contentRect.width,
-          height: entry.contentRect.height,
+        setStageDimensions({
+          width: Math.floor(entry.contentRect.width),
+          height: Math.floor(entry.contentRect.height),
         });
       }
     });
@@ -289,50 +291,16 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
     return () => ro.disconnect();
   }, [isFullscreen]);
 
-  // Compute scale and dimension for virtual responsive scaling
-  const currentDevice = DEVICE_OPTIONS.find((d) => d.id === deviceMode) || DEVICE_OPTIONS[2];
-  const { scale, frameWidth, frameHeight, marginX } = useMemo(() => {
-    const containerW = containerDimensions.width || 800;
-    const containerH = containerDimensions.height || 600;
+  // Compute frame scaling and dimensions via pure layout engine
+  const frameLayout = useMemo(() => {
+    return computeFrameLayout({
+      deviceMode,
+      stageWidth: stageDimensions.width,
+      stageHeight: stageDimensions.height,
+    });
+  }, [deviceMode, stageDimensions.width, stageDimensions.height]);
 
-    if (deviceMode === 'desktop') {
-      // If desktop viewport is narrower than 1280px, scale down smoothly
-      if (containerW < 1280 && containerW > 0) {
-        const s = Math.max(0.2, (containerW - 16) / 1280);
-        return {
-          scale: s,
-          frameWidth: 1280,
-          frameHeight: containerH / s,
-          marginX: 0,
-        };
-      }
-      return {
-        scale: 1,
-        frameWidth: containerW,
-        frameHeight: containerH,
-        marginX: 0,
-      };
-    }
-
-    // Phone (390px) or Tablet (768px)
-    const targetW = currentDevice.targetWidth;
-    if (containerW < targetW + 32 && containerW > 0) {
-      const s = Math.max(0.2, (containerW - 16) / targetW);
-      return {
-        scale: s,
-        frameWidth: targetW,
-        frameHeight: containerH / s,
-        marginX: 0,
-      };
-    }
-
-    return {
-      scale: 1,
-      frameWidth: targetW,
-      frameHeight: containerH,
-      marginX: Math.max(0, (containerW - targetW) / 2),
-    };
-  }, [deviceMode, currentDevice.targetWidth, containerDimensions]);
+  const { scale, innerWidth, innerHeight, outerWidth, outerHeight, offsetX } = frameLayout;
 
   // Cleanup blob URLs on unmount or before new preview build
   const cleanupBlobs = useCallback(() => {
@@ -485,6 +453,8 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
   const handleCopyDiagnostics = useCallback(async () => {
     try {
       const files = await listFiles(projectId);
+      const messages = await listProjectMessages(projectId);
+      const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
       const fileListStr = files.map((f) => `- ${f.path} (${new Blob([f.content]).size} bytes)`).join('\n');
       const entryFile = files.find((f) => f.path === selectedEntryPath) || files.find((f) => f.path === 'index.html');
       const entryFirst40 = entryFile ? entryFile.content.split('\n').slice(0, 40).join('\n') : '(None)';
@@ -494,6 +464,8 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
       const diagText = [
         `=== DESYRA PREVIEW DIAGNOSTICS ===`,
         `Entry Path: ${selectedEntryPath}`,
+        `Prompt Kind: ${lastAssistant?.promptKind || 'none'}`,
+        `Design Spec ID: ${lastAssistant?.designSpecId || 'none'}`,
         ``,
         `Project Files (${files.length}):`,
         fileListStr || '(No files)',
@@ -830,6 +802,13 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
             })}
           </div>
 
+          {/* Scaled Chip when scale < 1 */}
+          {scale < 1 && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface)] border border-[var(--border)] text-[var(--muted)] font-mono shrink-0 ml-0.5">
+              Scaled {Math.round(scale * 100)}%
+            </span>
+          )}
+
           {/* HTML Page Selector Dropdown (Shown only when multiple HTML files exist) */}
           {availableHtmlFiles.length > 1 && (
             <div className="relative flex items-center ml-1">
@@ -1103,11 +1082,11 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
         </div>
       )}
 
-      {/* 2. Main Frame Area */}
+      {/* 2. Main Stage Area (measured by ResizeObserver, external sibling to toolbar, banners, and console drawer) */}
       <div
-        ref={frameContainerRef}
+        ref={stageRef}
         onClick={() => isMenuOpen && setIsMenuOpen(false)}
-        className="flex-1 min-h-0 min-w-0 bg-[var(--bg)] relative overflow-hidden flex flex-col"
+        className="flex-1 min-h-0 min-w-0 bg-[var(--bg)] relative overflow-hidden p-2 flex flex-col"
       >
         {/* State A: Unsupported Framework (React/TSX/Vue/package.json) */}
         {unsupportedInfo?.isUnsupported && (
@@ -1178,43 +1157,50 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
 
         {/* State D: Normal Render with Sandboxed IFrame */}
         {!unsupportedInfo && !hasNoFiles && !hasNoHtml && (
-          <div className="flex-1 w-full h-full relative overflow-hidden flex items-start justify-center">
+          <div className="w-full h-full relative overflow-hidden flex items-start">
             {/* Virtual Device Frame with Scaling */}
             <div
               style={{
-                width: `${frameWidth}px`,
-                height: `${frameHeight}px`,
-                transform: scale !== 1 ? `scale(${scale})` : undefined,
-                transformOrigin: 'top center',
-                marginLeft: `${marginX}px`,
-                marginRight: `${marginX}px`,
+                width: `${outerWidth}px`,
+                height: `${outerHeight}px`,
+                marginLeft: `${offsetX}px`,
+                boxShadow: 'inset 0 0 0 1px var(--border)',
+                overflow: 'hidden',
+                borderRadius: deviceMode !== 'desktop' ? 'var(--radius-md)' : undefined,
               }}
-              className={`bg-white transition-transform duration-100 relative ${
-                deviceMode !== 'desktop'
-                  ? 'border border-[var(--border)] shadow-2xl rounded-[var(--radius-md)] overflow-hidden my-2'
-                  : 'w-full h-full'
-              }`}
+              className="relative shrink-0"
             >
               {/* Optional simulated notch for phone mode */}
               {deviceMode === 'mobile' && scale === 1 && (
                 <div className="absolute top-2 left-1/2 -translate-x-1/2 w-16 h-1 bg-black/20 rounded-full z-10 pointer-events-none" />
               )}
 
-              <iframe
-                ref={iframeRef}
-                title="DESYRA Sandboxed App Preview"
-                srcDoc={htmlContent}
-                sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock"
-                referrerPolicy="no-referrer"
-                allow=""
-                className="w-full h-full border-0 bg-white"
-              />
+              <div
+                style={{
+                  width: `${innerWidth}px`,
+                  height: `${innerHeight}px`,
+                  transform: scale !== 1 ? `scale(${scale})` : undefined,
+                  transformOrigin: 'top left',
+                }}
+                className="w-full h-full"
+              >
+                <iframe
+                  ref={iframeRef}
+                  title="DESYRA Sandboxed App Preview"
+                  srcDoc={htmlContent}
+                  sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock"
+                  referrerPolicy="no-referrer"
+                  allow=""
+                  className="w-full h-full border-0 bg-white block"
+                />
+              </div>
             </div>
           </div>
         )}
+      </div>
 
-        {/* 3. Collapsible Console Drawer */}
-        {isConsoleOpen && (
+      {/* 3. Collapsible Console Drawer (external sibling to stage) */}
+      {isConsoleOpen && (
           <div className="h-44 sm:h-52 bg-[var(--surface)] border-t border-[var(--border)] flex flex-col shrink-0 z-30 shadow-2xl">
             {/* Console Header */}
             <div className="h-8 px-3 bg-[var(--elevated)] border-b border-[var(--border)] flex items-center justify-between shrink-0">
@@ -1313,7 +1299,6 @@ export function PreviewPane({ projectId, isVisible = true, onFixWithAi }: Previe
             </div>
           </div>
         )}
-      </div>
 
       {/* Confirmation Modal: Clear Preview Storage */}
       <Modal

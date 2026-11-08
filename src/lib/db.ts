@@ -54,7 +54,7 @@ export interface FileUndoEntry {
 }
 
 export interface CompletenessIssue {
-  type: 'truncated' | 'incomplete_file' | 'missing_reference';
+  type: 'truncated' | 'incomplete_file' | 'missing_reference' | 'design_issue';
   path?: string;
   sourceFile?: string;
   details?: string;
@@ -77,6 +77,8 @@ export interface StoredMessage {
   completionTokens?: number;
   maxOutputTokens?: number;
   completenessIssues?: CompletenessIssue[];
+  promptKind?: 'design' | 'basic';
+  designSpecId?: string;
 }
 
 export interface MetaItem {

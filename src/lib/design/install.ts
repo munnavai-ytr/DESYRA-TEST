@@ -166,3 +166,50 @@ export async function installDesignSystem(
 
   return designData;
 }
+
+/**
+ * Normalizes a stored project design field (which might be DesignSpec or ProjectDesignData)
+ * into a valid DesignSpec.
+ */
+export function extractDesignSpec(design: any): DesignSpec | null {
+  if (!design) return null;
+  if (design.archetypeId && design.tokens) return design as DesignSpec;
+  if (design.spec && design.spec.archetypeId && design.spec.tokens) return design.spec as DesignSpec;
+  return null;
+}
+
+/**
+ * Ensures a project has a valid DesignSpec installed and saved.
+ * Guarantees execution order:
+ * 1. create spec
+ * 2. await installDesignSystem (writes managed CSS files to storage)
+ * 3. await updateProject (saves design spec to DB)
+ * 4. returns the resolved spec
+ */
+export async function ensureProjectDesign(
+  projectId: string,
+  promptOrIdea: string,
+  existingDesign?: DesignSpec | null
+): Promise<{ spec: DesignSpec; isNewlyCreated: boolean }> {
+  const current = extractDesignSpec(existingDesign);
+  if (current) {
+    return { spec: current, isNewlyCreated: false };
+  }
+
+  // Check database
+  const db = getDb();
+  if (db) {
+    const project = await db.projects.get(projectId);
+    const dbSpec = extractDesignSpec(project?.design);
+    if (dbSpec) {
+      return { spec: dbSpec, isNewlyCreated: false };
+    }
+  }
+
+  // Create, install, and save in strict sequence
+  const spec = createSpecFromClassification(promptOrIdea);
+  await installDesignSystem(projectId, spec, { overwrite: true });
+  await updateProject(projectId, { design: spec });
+
+  return { spec, isNewlyCreated: true };
+}

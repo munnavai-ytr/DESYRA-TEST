@@ -4,6 +4,8 @@ import {
   buildProjectFilesMessage,
   buildAiChatContext,
 } from './context';
+import { BUILD_SYSTEM_PROMPT } from './prompts/build';
+import { createSpecFromClassification } from '@/lib/design/install';
 import type { ProjectFile, StoredMessage } from '@/lib/db';
 
 describe('context builder', () => {
@@ -73,5 +75,76 @@ Let me know what you think!`;
     expect(msg).toContain('## Current Project Files');
     expect(msg).toContain('### File: a.txt');
     expect(msg).toContain('### File: open.txt');
+  });
+
+  describe('Fix A: design prompt flow and consistency', () => {
+    it('(1) uses design system prompt with class reference and active design section when projectDesign is provided', () => {
+      const spec = createSpecFromClassification('Modern Invoice and Billing Dashboard');
+      const messages = buildAiChatContext({
+        projectFiles: [],
+        conversationHistory: [
+          {
+            id: 'm1',
+            projectId: 'p1',
+            role: 'user',
+            content: 'Build me an invoice app',
+            createdAt: 1000,
+          },
+        ],
+        projectDesign: spec,
+      });
+
+      const systemPrompt = messages[0].content;
+      // System prompt sent to provider contains Design System section and class reference
+      expect(systemPrompt).toContain('## ACTIVE DESIGN SYSTEM (DESYRA Design Engine)');
+      expect(systemPrompt).toContain('### Mandatory HTML Head Setup');
+      expect(systemPrompt).toContain('### DESYRA Component Class Reference');
+      expect(systemPrompt).toContain('.btn-primary');
+      expect(systemPrompt).toContain('.card');
+      expect(systemPrompt).toContain(spec.archetypeId);
+      expect(systemPrompt).not.toBe(BUILD_SYSTEM_PROMPT);
+    });
+
+    it('(2) auto-continue and Fix with AI rounds use the exact same design prompt', () => {
+      const spec = createSpecFromClassification('Kanban Task Board');
+
+      // Initial turn context
+      const initialCtx = buildAiChatContext({
+        projectFiles: [{ id: '1', projectId: 'p1', path: 'index.html', content: '<html></html>', createdAt: 1, updatedAt: 1 }],
+        conversationHistory: [
+          { id: 'u1', projectId: 'p1', role: 'user', content: 'Build Kanban', createdAt: 100 },
+          { id: 'a1', projectId: 'p1', role: 'assistant', content: 'Done', createdAt: 200 },
+        ],
+        projectDesign: spec,
+      });
+
+      // Auto-continue / Fix turn context
+      const continueCtx = buildAiChatContext({
+        projectFiles: [{ id: '1', projectId: 'p1', path: 'index.html', content: '<html></html>', createdAt: 1, updatedAt: 2 }],
+        conversationHistory: [
+          { id: 'u1', projectId: 'p1', role: 'user', content: 'Build Kanban', createdAt: 100 },
+          { id: 'a1', projectId: 'p1', role: 'assistant', content: 'Done', createdAt: 200 },
+          { id: 'u2', projectId: 'p1', role: 'user', content: 'Continue build and fix missing files', createdAt: 300 },
+        ],
+        projectDesign: spec,
+      });
+
+      // Both rounds must use the identical design system prompt
+      expect(initialCtx[0].content).toBe(continueCtx[0].content);
+      expect(continueCtx[0].content).toContain('## ACTIVE DESIGN SYSTEM (DESYRA Design Engine)');
+    });
+
+    it('(3) projects created before 7A (no design) still use the basic BUILD_SYSTEM_PROMPT', () => {
+      const legacyCtx = buildAiChatContext({
+        projectFiles: [{ id: '1', projectId: 'p1', path: 'index.html', content: '<html></html>', createdAt: 1, updatedAt: 1 }],
+        conversationHistory: [
+          { id: 'u1', projectId: 'p1', role: 'user', content: 'Build calculator', createdAt: 100 },
+        ],
+        projectDesign: null,
+      });
+
+      expect(legacyCtx[0].content).toBe(BUILD_SYSTEM_PROMPT);
+      expect(legacyCtx[0].content).not.toContain('ACTIVE DESIGN SYSTEM');
+    });
   });
 });
