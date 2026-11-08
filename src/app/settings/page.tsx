@@ -21,6 +21,7 @@ import {
   type SafeProviderInfo,
   type SecurityMode,
 } from '@/lib/keys';
+import { getAutoContinueEnabled, setAutoContinueEnabled } from '@/lib/db';
 import { ProviderCard } from '@/components/settings/provider-card';
 import { CustomProviderSection } from '@/components/settings/custom-provider-card';
 import { SecuritySection } from '@/components/settings/security-section';
@@ -35,6 +36,7 @@ export default function SettingsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [showProtectionDetails, setShowProtectionDetails] = useState(false);
+  const [autoContinueEnabled, setAutoContinueEnabledState] = useState(true);
 
   const loadData = useCallback(() => {
     setIsLoading(true);
@@ -43,11 +45,13 @@ export default function SettingsPage() {
       listProviders(),
       getSecurityMode(),
       isSessionLocked(),
+      getAutoContinueEnabled(),
     ])
-      .then(([allProviders, mode, locked]) => {
+      .then(([allProviders, mode, locked, autoContinue]) => {
         setProviders(allProviders);
         setSecurityMode(mode);
         setIsLocked(locked);
+        setAutoContinueEnabledState(autoContinue);
         if (locked) {
           setIsUnlockModalOpen(true);
         }
@@ -67,12 +71,14 @@ export default function SettingsPage() {
       listProviders(),
       getSecurityMode(),
       isSessionLocked(),
+      getAutoContinueEnabled(),
     ])
-      .then(([allProviders, mode, locked]) => {
+      .then(([allProviders, mode, locked, autoContinue]) => {
         if (active) {
           setProviders(allProviders);
           setSecurityMode(mode);
           setIsLocked(locked);
+          setAutoContinueEnabledState(autoContinue);
           if (locked) {
             setIsUnlockModalOpen(true);
           }
@@ -270,6 +276,51 @@ export default function SettingsPage() {
           onRefresh={loadData}
           onRequireUnlock={() => setIsUnlockModalOpen(true)}
         />
+      )}
+
+      {/* Section: AI Builder Behavior */}
+      {!isLoading && (
+        <Card className="p-6 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text)] uppercase tracking-wider">
+              AI Builder Behavior
+            </h3>
+            <p className="text-xs text-[var(--muted)] mt-0.5">
+              Configure how DESYRA handles code generation and incomplete builds.
+            </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4 pt-3 border-t border-[var(--border)]">
+            <div className="space-y-1">
+              <label
+                htmlFor="auto-continue-toggle"
+                className="text-xs sm:text-sm font-medium text-[var(--text)] cursor-pointer select-none"
+              >
+                Auto-continue incomplete builds
+              </label>
+              <p className="text-xs text-[var(--muted)] leading-relaxed">
+                When an AI model runs into its output token limit or leaves referenced files uncreated, DESYRA automatically prompts it up to 3 times to finish the remaining files.
+              </p>
+              <p className="text-[11px] text-[var(--disabled)]">
+                Note: Auto-continuation sends follow-up requests which consume additional tokens from your configured provider account.
+              </p>
+            </div>
+
+            <div className="pt-0.5 shrink-0">
+              <input
+                id="auto-continue-toggle"
+                type="checkbox"
+                checked={autoContinueEnabled}
+                onChange={async (e) => {
+                  const val = e.target.checked;
+                  setAutoContinueEnabledState(val);
+                  await setAutoContinueEnabled(val);
+                }}
+                className="w-4 h-4 rounded border-[var(--border)] text-[var(--accent)] accent-[var(--accent)] focus:ring-[var(--accent)] cursor-pointer"
+              />
+            </div>
+          </div>
+        </Card>
       )}
 
       {/* Section D: Danger Zone */}

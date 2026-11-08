@@ -80,7 +80,8 @@ function formatFileSize(bytes: number): string {
 export function buildProjectFilesMessage(
   files: ProjectFile[],
   touchedPaths: string[],
-  openFilePath?: string | null
+  openFilePath?: string | null,
+  incompletePaths: string[] = []
 ): string {
   if (files.length === 0) {
     return 'The project currently has no files.';
@@ -89,15 +90,18 @@ export function buildProjectFilesMessage(
   // 1. Manifest of all files
   const manifestLines = files.map((f) => {
     const byteSize = new Blob([f.content]).size;
-    return `- ${f.path} (${formatFileSize(byteSize)}, ${f.content.split('\n').length} lines)`;
+    const isIncomplete = incompletePaths.includes(f.path);
+    const incompleteTag = isIncomplete ? ' [INCOMPLETE: cut off during previous turn]' : '';
+    return `- ${f.path} (${formatFileSize(byteSize)}, ${f.content.split('\n').length} lines)${incompleteTag}`;
   });
 
   let message = `## Current Project Files (Check this list and folder structure before adding or modifying files; never create duplicate/similar files like style.css vs styles.css or app.js vs script.js; update existing files in place):\n${manifestLines.join('\n')}\n\n`;
 
   // 2. Sort files by priority:
-  // Priority 1: Files touched in last assistant message
-  // Priority 2: Currently open file
-  // Priority 3: Most recently updated files
+  // Priority 1: Incomplete files from last turn (need urgent re-sending)
+  // Priority 2: Files touched in last assistant message
+  // Priority 3: Currently open file
+  // Priority 4: Most recently updated files
   const priorityMap = new Map<string, number>();
 
   files.forEach((f) => {
@@ -107,6 +111,9 @@ export function buildProjectFilesMessage(
     }
     if (touchedPaths.includes(f.path)) {
       score += 20_000_000_000;
+    }
+    if (incompletePaths.includes(f.path)) {
+      score += 30_000_000_000;
     }
     priorityMap.set(f.path, score);
   });
@@ -120,7 +127,11 @@ export function buildProjectFilesMessage(
   const omittedFiles: string[] = [];
 
   for (const file of prioritizedFiles) {
-    const fileHeader = `### File: ${file.path}\n\`\`\`\n`;
+    const isIncomplete = incompletePaths.includes(file.path);
+    const statusNote = isIncomplete
+      ? ' [INCOMPLETE: cut off during previous turn; needs complete re-send]'
+      : '';
+    const fileHeader = `### File: ${file.path}${statusNote}\n\`\`\`\n`;
     const fileFooter = `\n\`\`\`\n\n`;
     const needed = fileHeader.length + file.content.length + fileFooter.length;
 
@@ -142,6 +153,27 @@ export function buildProjectFilesMessage(
 }
 
 /**
+ * Extracts paths of incomplete files from the last assistant message.
+ */
+function getIncompleteFilesInLastAssistantMessage(messages: StoredMessage[]): string[] {
+  const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+  if (!lastAssistant) return [];
+
+  const set = new Set<string>();
+  if (lastAssistant.incompleteFiles && lastAssistant.incompleteFiles.length > 0) {
+    lastAssistant.incompleteFiles.forEach((p) => set.add(p));
+  }
+  if (lastAssistant.completenessIssues && lastAssistant.completenessIssues.length > 0) {
+    lastAssistant.completenessIssues.forEach((issue) => {
+      if (issue.type === 'incomplete_file' && issue.path) {
+        set.add(issue.path);
+      }
+    });
+  }
+  return Array.from(set);
+}
+
+/**
  * Builds the complete list of ChatMessages to send to the provider adapter:
  * - System prompt
  * - "Project files" message
@@ -153,7 +185,13 @@ export function buildAiChatContext({
   openFilePath,
 }: BuildContextParams): ChatMessage[] {
   const touchedInLast = getFilesTouchedInLastAssistantMessage(conversationHistory);
-  const projectFilesContent = buildProjectFilesMessage(projectFiles, touchedInLast, openFilePath);
+  const incompletePaths = getIncompleteFilesInLastAssistantMessage(conversationHistory);
+  const projectFilesContent = buildProjectFilesMessage(
+    projectFiles,
+    touchedInLast,
+    openFilePath,
+    incompletePaths
+  );
 
   // Take the last 20 conversation messages
   const recentHistory = conversationHistory.slice(-20);

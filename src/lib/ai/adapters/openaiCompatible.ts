@@ -90,6 +90,10 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
           name?: string;
           description?: string;
           context_length?: number;
+          top_provider?: { max_completion_tokens?: number };
+          max_completion_tokens?: number;
+          max_output_tokens?: number;
+          output_token_limit?: number;
           architecture?: { modality?: string };
           pricing?: { prompt?: string; completion?: string };
         }> = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
@@ -108,6 +112,17 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
             m.pricing?.prompt === '0' && m.pricing?.completion === '0'
           );
 
+          const reportedLimit =
+            m.top_provider?.max_completion_tokens ??
+            m.max_completion_tokens ??
+            m.max_output_tokens ??
+            m.output_token_limit;
+
+          const outputTokenLimit =
+            typeof reportedLimit === 'number' && reportedLimit > 0
+              ? reportedLimit
+              : undefined;
+
           const tags = inferModelTags(id, {
             supportsVision,
             isFree,
@@ -120,6 +135,7 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
             name,
             provider: providerName,
             contextWindow: m.context_length,
+            outputTokenLimit,
             supportsVision,
             tags,
             description: m.description,
@@ -141,6 +157,7 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
       model,
       messages,
       signal,
+      maxOutputTokens,
     }): AsyncIterable<StreamChunk> {
       const cleanBase = baseUrl.replace(/\/+$/, '');
       const url = `${cleanBase}/chat/completions`;
@@ -155,37 +172,59 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
         headers['X-Title'] = 'DESYRA';
       }
 
-      const payload = {
-        model,
-        messages: messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        stream: true,
-      };
-
+      let currentLimit = maxOutputTokens;
+      let retried = false;
       let response: Response;
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-          signal,
-        });
-      } catch (err) {
-        const parsed = parseFetchException(err, providerName);
-        throw new Error(parsed.message);
-      }
 
-      if (!response.ok) {
-        const err = await parseHttpResponseError(response, providerName);
-        throw new Error(err.message);
+      while (true) {
+        const payload: Record<string, any> = {
+          model,
+          messages: messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          stream: true,
+        };
+
+        if (currentLimit && currentLimit > 0) {
+          payload.max_tokens = currentLimit;
+        }
+
+        try {
+          response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+            signal,
+          });
+        } catch (err) {
+          const parsed = parseFetchException(err, providerName);
+          throw new Error(parsed.message);
+        }
+
+        if (!response.ok) {
+          const err = await parseHttpResponseError(response, providerName);
+          // Fix A: If HTTP 400 mentions max tokens / output limit, retry ONCE with halved value (minimum 4096)
+          if (
+            response.status === 400 &&
+            !retried &&
+            /max[_\s-]?tokens|max_completion_tokens|output[_\s-]?limit/i.test(err.message)
+          ) {
+            retried = true;
+            currentLimit = Math.max(4096, Math.floor((currentLimit || 16384) / 2));
+            continue;
+          }
+          throw new Error(err.message);
+        }
+        break;
       }
 
       const chunksQueue: StreamChunk[] = [];
       let streamDone = false;
       let streamError: Error | null = null;
       let notifyResolver: (() => void) | null = null;
+      let detectedFinishReason: StreamChunk['finishReason'] = undefined;
+      let lastUsage: StreamChunk['usage'] = undefined;
 
       const pushChunk = (chunk: StreamChunk) => {
         chunksQueue.push(chunk);
@@ -203,6 +242,19 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
             const choice = parsed.choices?.[0];
             const deltaText = choice?.delta?.content || choice?.delta?.text;
 
+            if (choice?.finish_reason) {
+              const r = choice.finish_reason;
+              if (r === 'stop') {
+                detectedFinishReason = 'stop';
+              } else if (r === 'length') {
+                detectedFinishReason = 'length';
+              } else if (r === 'content_filter') {
+                detectedFinishReason = 'safety';
+              } else {
+                detectedFinishReason = 'other';
+              }
+            }
+
             const usage = parsed.usage
               ? {
                   promptTokens: parsed.usage.prompt_tokens,
@@ -210,6 +262,10 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
                   totalTokens: parsed.usage.total_tokens,
                 }
               : undefined;
+
+            if (usage) {
+              lastUsage = usage;
+            }
 
             if (deltaText) {
               pushChunk({ text: deltaText, done: false, usage });
@@ -222,7 +278,12 @@ export function createOpenAICompatibleAdapter(providerName: string): ProviderAda
       )
         .then(() => {
           streamDone = true;
-          pushChunk({ done: true });
+          const finish = detectedFinishReason || (signal?.aborted ? 'interrupted' : 'interrupted');
+          pushChunk({
+            done: true,
+            finishReason: finish,
+            usage: lastUsage,
+          });
         })
         .catch((err) => {
           streamError = err;

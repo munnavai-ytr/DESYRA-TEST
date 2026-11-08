@@ -122,6 +122,7 @@ export const anthropicAdapter: ProviderAdapter = {
     model,
     messages,
     signal,
+    maxOutputTokens,
   }): AsyncIterable<StreamChunk> {
     const url = `${baseUrl}/v1/messages`;
 
@@ -148,50 +149,68 @@ export const anthropicAdapter: ProviderAdapter = {
       systemText = '';
     }
 
-    const payload: {
-      model: string;
-      max_tokens: number;
-      messages: typeof formattedMessages;
-      system?: string;
-      stream: boolean;
-    } = {
-      model,
-      max_tokens: 4096,
-      messages: formattedMessages,
-      stream: true,
-    };
-
-    if (systemText) {
-      payload.system = systemText;
-    }
-
+    let currentLimit = maxOutputTokens || 16384;
+    let retried = false;
     let response: Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': ANTHROPIC_VERSION,
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify(payload),
-        signal,
-      });
-    } catch (err) {
-      const parsed = parseFetchException(err, 'Anthropic');
-      throw new Error(parsed.message);
-    }
 
-    if (!response.ok) {
-      const err = await parseHttpResponseError(response, 'Anthropic');
-      throw new Error(err.message);
+    while (true) {
+      const payload: {
+        model: string;
+        max_tokens: number;
+        messages: typeof formattedMessages;
+        system?: string;
+        stream: boolean;
+      } = {
+        model,
+        max_tokens: currentLimit,
+        messages: formattedMessages,
+        stream: true,
+      };
+
+      if (systemText) {
+        payload.system = systemText;
+      }
+
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': ANTHROPIC_VERSION,
+            'anthropic-dangerous-direct-browser-access': 'true',
+          },
+          body: JSON.stringify(payload),
+          signal,
+        });
+      } catch (err) {
+        const parsed = parseFetchException(err, 'Anthropic');
+        throw new Error(parsed.message);
+      }
+
+      if (!response.ok) {
+        const err = await parseHttpResponseError(response, 'Anthropic');
+        // Fix A: If HTTP 400 mentions max tokens / output limit, retry ONCE with halved value (minimum 4096)
+        if (
+          response.status === 400 &&
+          !retried &&
+          /max[_\s-]?tokens|max_completion_tokens|output[_\s-]?limit/i.test(err.message)
+        ) {
+          retried = true;
+          currentLimit = Math.max(4096, Math.floor(currentLimit / 2));
+          continue;
+        }
+        throw new Error(err.message);
+      }
+      break;
     }
 
     const chunksQueue: StreamChunk[] = [];
     let streamDone = false;
     let streamError: Error | null = null;
     let notifyResolver: (() => void) | null = null;
+    let detectedFinishReason: StreamChunk['finishReason'] = undefined;
+    let totalCompletionTokens = 0;
 
     const pushChunk = (chunk: StreamChunk) => {
       chunksQueue.push(chunk);
@@ -212,13 +231,26 @@ export const anthropicAdapter: ProviderAdapter = {
               pushChunk({ text: textDelta, done: false });
             }
           } else if (parsed.type === 'message_delta') {
-            if (parsed.usage) {
+            if (parsed.usage?.output_tokens) {
+              totalCompletionTokens = parsed.usage.output_tokens;
               pushChunk({
                 done: false,
                 usage: {
                   completionTokens: parsed.usage.output_tokens,
                 },
               });
+            }
+            if (parsed.delta?.stop_reason) {
+              const sr = parsed.delta.stop_reason;
+              if (sr === 'end_turn' || sr === 'stop_sequence') {
+                detectedFinishReason = 'stop';
+              } else if (sr === 'max_tokens') {
+                detectedFinishReason = 'length';
+              } else if (sr === 'refusal') {
+                detectedFinishReason = 'safety';
+              } else {
+                detectedFinishReason = 'other';
+              }
             }
           }
         } catch {
@@ -229,7 +261,12 @@ export const anthropicAdapter: ProviderAdapter = {
     )
       .then(() => {
         streamDone = true;
-        pushChunk({ done: true });
+        const finish = detectedFinishReason || (signal?.aborted ? 'interrupted' : 'interrupted');
+        pushChunk({
+          done: true,
+          finishReason: finish,
+          usage: totalCompletionTokens ? { completionTokens: totalCompletionTokens } : undefined,
+        });
       })
       .catch((err) => {
         streamError = err;

@@ -65,7 +65,18 @@ Push 6 delivers a free, 100% in-browser, zero-backend live preview engine:
    - **Structured AI Fix Prompt**: Composes a concise fix request (max 6,000 characters) sent directly into the Chat Composer (switching mobile view to Chat automatically).
    - **Loop Prevention**: Tracks fix attempts per error signature. If an error persists after 2 attempts, the banner displays "Still failing - try describing the problem in the chat" and demotes the button styling.
 
-6. **Known Limits and Diagnostics**:
+6. **Incomplete Build Detection, Token Limits & Auto-Continue (Fix Push 6.3)**:
+   - **Explicit Token Limits & Resolution Order**: Resolves output limits strictly in order: User override (from `modelSettings` Dexie table) > Provider-reported limit from model list (e.g. Gemini `outputTokenLimit`, OpenRouter `top_provider.max_completion_tokens`), capped at 32,768 > Provider fallback (Anthropic: 16,384; Gemini and OpenAI-compatible: omit when unknown).
+   - **HTTP 400 Max-Tokens Retry**: If a provider rejects a request with HTTP 400 citing max tokens or output limit constraints, DESYRA retries once with the limit halved (minimum 4,096), then surfaces the true error.
+   - **Advanced Max Output Tokens Setting**: Per provider+model numeric field in Settings > Model Picker (valid 1,024 to 200,000 tokens, empty = automatic).
+   - **Thinking / Reasoning Models Note**: Reasoning models (e.g., Gemini Flash Thinking, o1, o3-mini, Claude 3.7 Sonnet Thinking) count their internal reasoning tokens against the max output token limit before emitting visible output. If a build cuts off early, increasing the output limit or switching models gives more room for code generation.
+   - **Stream Finish Reason Detection**: Captures `candidates[0].finishReason` (Gemini), `choices[0].finish_reason` (OpenAI-compatible), and `delta.stop_reason` (Anthropic). Distinguishes `stop`, `length` (max output tokens reached), `safety`, and `interrupted`.
+   - **Message Footer Token Statistics**: Displays completion tokens count (e.g. `1,240 tokens`) and contextual notes when output limits are reached or connections end early.
+   - **Pure Completeness Verification**: Scans masked HTML, CSS (`@import`, `url()`), and JS (relative imports) for missing referenced assets, unterminated writes, and truncated responses, with similar-file suggestions (`style.css` vs `styles.css`).
+   - **"Build May Be Incomplete" Warning Card**: Displays up to 6 detected issues with `[Continue build]` and `[Dismiss]` buttons.
+   - **Auto-Continue Controller**: Prompts the AI up to 3 automatic follow-up rounds with numbered continuation instructions (`buildContinueMessage`). Halts immediately if the issue signature is unchanged, if the user clicks Stop, or if provider safety blocks the prompt. Configurable via Settings > "AI Builder Behavior" (default ON).
+
+7. **Known Limits and Diagnostics**:
    - **Static Web Scope**: Runs static HTML, CSS, JS, Alpine.js, Tailwind CDN, and Google Fonts. Projects containing React/TSX/Vue or `package.json` trigger a clear unsupported stack notification listing the detected files.
    - **Storage Boundaries**: Simulated `localStorage` and `sessionStorage` persist up to 1 MB total per project (200 KB per value limit). `document.cookie` and `IndexedDB` inside the sandbox emit browser warnings.
    - **Runtime Diagnostic Check**: If the preview iframe runtime does not post `ready` within 5 seconds, an amber warning appears in the console drawer ("Preview runtime did not start. The page may be malformed.").

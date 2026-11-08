@@ -20,6 +20,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip } from '@/components/ui/tooltip';
 import { listModels, type ModelInfo, type ModelTag } from '@/lib/ai';
 import { setDefaultModel, type SafeProviderInfo } from '@/lib/keys';
+import { getModelSetting, setModelSetting } from '@/lib/db';
 import { useToast } from '@/components/ui/toast';
 
 export interface ModelPickerProps {
@@ -41,8 +42,26 @@ export function ModelPicker({
   const [manualModelInput, setManualModelInput] = useState('');
   const [isSavingManual, setIsSavingManual] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [maxTokensInput, setMaxTokensInput] = useState<string>('');
+  const [maxTokensError, setMaxTokensError] = useState<string | null>(null);
+  const [isSavingMaxTokens, setIsSavingMaxTokens] = useState(false);
 
   const selectedModelId = provider.defaultModel;
+
+  useEffect(() => {
+    let active = true;
+    if (selectedModelId) {
+      getModelSetting(provider.id, selectedModelId).then((setting) => {
+        if (active) {
+          setMaxTokensInput(setting?.maxOutputTokens ? String(setting.maxOutputTokens) : '');
+          setMaxTokensError(null);
+        }
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [provider.id, selectedModelId]);
 
   const fetchModels = useCallback(
     async (force = false) => {
@@ -144,6 +163,46 @@ export function ModelPicker({
       onModelSelected?.(clean);
     } finally {
       setIsSavingManual(false);
+    }
+  };
+
+  const handleSaveMaxTokens = async () => {
+    if (!selectedModelId) return;
+    const raw = maxTokensInput.trim();
+    if (!raw) {
+      setMaxTokensError(null);
+      await setModelSetting(provider.id, selectedModelId, undefined);
+      toast({
+        type: 'info',
+        title: 'Automatic output limit',
+        message: `Max output tokens reset to automatic for ${selectedModelId}.`,
+      });
+      return;
+    }
+
+    const num = parseInt(raw, 10);
+    if (isNaN(num) || num < 1024 || num > 200000) {
+      setMaxTokensError('Must be between 1,024 and 200,000 (or empty for automatic).');
+      return;
+    }
+
+    setMaxTokensError(null);
+    setIsSavingMaxTokens(true);
+    try {
+      await setModelSetting(provider.id, selectedModelId, num);
+      toast({
+        type: 'success',
+        title: 'Max output tokens saved',
+        message: `Limit set to ${num.toLocaleString()} tokens for ${selectedModelId}.`,
+      });
+    } catch {
+      toast({
+        type: 'error',
+        title: 'Error',
+        message: 'Failed to save token limit.',
+      });
+    } finally {
+      setIsSavingMaxTokens(false);
     }
   };
 
@@ -343,6 +402,49 @@ export function ModelPicker({
               </Button>
             </form>
           </details>
+
+          {/* Advanced: Max Output Tokens override */}
+          {selectedModelId && (
+            <div className="pt-2 border-t border-[var(--border)]/70">
+              <details className="text-xs text-[var(--muted)]">
+                <summary className="cursor-pointer hover:text-[var(--text)] select-none text-[11px] font-medium">
+                  Advanced: max output tokens for <span className="font-mono text-[var(--accent)]">{selectedModelId}</span>
+                </summary>
+                <div className="mt-2 space-y-2 p-3 rounded-[var(--radius-sm)] bg-[var(--surface)] border border-[var(--border)]">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      min={1024}
+                      max={200000}
+                      step={512}
+                      value={maxTokensInput}
+                      onChange={(e) => {
+                        setMaxTokensInput(e.target.value);
+                        setMaxTokensError(null);
+                      }}
+                      placeholder="Automatic (recommended)"
+                      className="text-xs font-mono h-8 min-h-[36px] flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleSaveMaxTokens}
+                      loading={isSavingMaxTokens}
+                    >
+                      Save limit
+                    </Button>
+                  </div>
+                  {maxTokensError && (
+                    <p className="text-[11px] text-[var(--error)]">{maxTokensError}</p>
+                  )}
+                  <p className="text-[11px] text-[var(--disabled)] leading-normal">
+                    Empty = automatic provider limit. Sets the maximum tokens the model can generate per response (1,024 to 200,000). Thinking/reasoning models use output tokens for internal reasoning before generating code.
+                  </p>
+                </div>
+              </details>
+            </div>
+          )}
         </div>
       )}
     </div>

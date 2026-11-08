@@ -51,6 +51,14 @@ export interface FileUndoEntry {
   after: string | null;
 }
 
+export interface CompletenessIssue {
+  type: 'truncated' | 'incomplete_file' | 'missing_reference';
+  path?: string;
+  sourceFile?: string;
+  details?: string;
+  similarFileHint?: string;
+}
+
 export interface StoredMessage {
   id: string;
   projectId: string;
@@ -63,6 +71,10 @@ export interface StoredMessage {
   undoDisabledReason?: string;
   incompleteFiles?: string[];
   failedEdits?: Array<{ path: string; reason: string }>;
+  finishReason?: 'stop' | 'length' | 'safety' | 'interrupted' | 'other';
+  completionTokens?: number;
+  maxOutputTokens?: number;
+  completenessIssues?: CompletenessIssue[];
 }
 
 export interface MetaItem {
@@ -76,6 +88,15 @@ export interface PreviewStorageItem {
   value: string;
 }
 
+export interface ModelSetting {
+  id?: number;
+  providerId: string;
+  modelId: string;
+  maxOutputTokens?: number;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export const MAX_PREVIEW_STORAGE_TOTAL_BYTES = 1024 * 1024; // 1 MB cap
 export const MAX_PREVIEW_STORAGE_VALUE_BYTES = 200 * 1024; // 200 KB per value cap
 
@@ -87,6 +108,7 @@ export class DesyraDatabase extends Dexie {
   messages!: Table<StoredMessage, string>;
   files!: Table<ProjectFile, string>;
   previewStorage!: Table<PreviewStorageItem, [string, string]>;
+  modelSettings!: Table<ModelSetting, number>;
 
   constructor() {
     super('desyra_db');
@@ -121,6 +143,16 @@ export class DesyraDatabase extends Dexie {
       messages: 'id, projectId, createdAt, role',
       files: 'id, projectId, path, [projectId+path], createdAt, updatedAt',
       previewStorage: '[projectId+key], projectId',
+    });
+    this.version(6).stores({
+      projects: 'id, title, createdAt, updatedAt, autoStarted',
+      providers: 'id, providerType, label, isDefault, createdAt, updatedAt, defaultModel, lastTestStatus',
+      meta: 'key',
+      modelCache: 'providerId, fetchedAt',
+      messages: 'id, projectId, createdAt, role',
+      files: 'id, projectId, path, [projectId+path], createdAt, updatedAt',
+      previewStorage: '[projectId+key], projectId',
+      modelSettings: '++id, [providerId+modelId], providerId, modelId',
     });
   }
 }
@@ -575,6 +607,112 @@ export async function clearPreviewStorage(projectId: string): Promise<void> {
     await database.previewStorage.where('projectId').equals(projectId).delete();
   } catch (error) {
     console.error(`[DESYRA DB] Failed to clear preview storage for project ${projectId}:`, error);
+  }
+}
+
+/**
+ * Retrieves custom model setting (e.g. maxOutputTokens) for a provider and model.
+ */
+export async function getModelSetting(
+  providerId: string,
+  modelId: string
+): Promise<ModelSetting | undefined> {
+  const database = getDb();
+  if (!database) return undefined;
+  try {
+    return await database.modelSettings
+      .where('[providerId+modelId]')
+      .equals([providerId, modelId])
+      .first();
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to get model setting for ${providerId}/${modelId}:`, error);
+    return undefined;
+  }
+}
+
+/**
+ * Saves or updates custom model setting (maxOutputTokens) for a provider and model.
+ * If maxOutputTokens is undefined or empty, clears the setting.
+ */
+export async function setModelSetting(
+  providerId: string,
+  modelId: string,
+  maxOutputTokens?: number
+): Promise<void> {
+  const database = getDb();
+  if (!database) return;
+  try {
+    const existing = await database.modelSettings
+      .where('[providerId+modelId]')
+      .equals([providerId, modelId])
+      .first();
+
+    if (maxOutputTokens === undefined || maxOutputTokens === null || isNaN(maxOutputTokens)) {
+      if (existing?.id) {
+        await database.modelSettings.delete(existing.id);
+      }
+      return;
+    }
+
+    const now = Date.now();
+    if (existing?.id) {
+      await database.modelSettings.update(existing.id, {
+        maxOutputTokens,
+        updatedAt: now,
+      });
+    } else {
+      await database.modelSettings.add({
+        providerId,
+        modelId,
+        maxOutputTokens,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to set model setting for ${providerId}/${modelId}:`, error);
+  }
+}
+
+const AUTO_CONTINUE_KEY = 'desyra_auto_continue_incomplete';
+
+/**
+ * Checks whether auto-continue is enabled for incomplete builds (defaults to true).
+ */
+export async function getAutoContinueEnabled(): Promise<boolean> {
+  const database = getDb();
+  if (!database) {
+    if (typeof window !== 'undefined') {
+      const val = localStorage.getItem(AUTO_CONTINUE_KEY);
+      return val === null ? true : val === 'true';
+    }
+    return true;
+  }
+  try {
+    const item = await database.meta.get(AUTO_CONTINUE_KEY);
+    if (!item) return true;
+    return Boolean(item.value);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Updates auto-continue setting.
+ */
+export async function setAutoContinueEnabled(enabled: boolean): Promise<void> {
+  const database = getDb();
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(AUTO_CONTINUE_KEY, String(enabled));
+  }
+  if (!database) return;
+  try {
+    await database.meta.put({
+      key: AUTO_CONTINUE_KEY,
+      value: enabled,
+    });
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to set auto-continue setting:', error);
   }
 }
 

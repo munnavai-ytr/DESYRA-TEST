@@ -13,7 +13,7 @@ import {
   updateProviderTestStatus,
   type SafeProviderInfo,
 } from '@/lib/keys';
-import { getModelCache, setModelCache } from '@/lib/db';
+import { getModelCache, setModelCache, getModelSetting } from '@/lib/db';
 
 export * from './types';
 export * from './utils';
@@ -121,6 +121,45 @@ export async function listModels(
 }
 
 /**
+ * Resolves maxOutputTokens following Fix A resolution order:
+ * User override (Fix A2) > model's outputTokenLimit (capped at 32,768) > provider fallback.
+ */
+export async function resolveMaxOutputTokens(
+  provider: SafeProviderInfo,
+  modelId: string,
+  modelInfo?: ModelInfo
+): Promise<number | undefined> {
+  // 1. User override from modelSettings table
+  const userSetting = await getModelSetting(provider.id, modelId);
+  if (userSetting?.maxOutputTokens && userSetting.maxOutputTokens >= 1024) {
+    return userSetting.maxOutputTokens;
+  }
+
+  // 2. Model's outputTokenLimit (cap at 32,768)
+  let limit = modelInfo?.outputTokenLimit;
+  if (!limit) {
+    const cached = await getModelCache(provider.id);
+    if (cached?.models && Array.isArray(cached.models)) {
+      const match = cached.models.find((m: any) => m.id === modelId);
+      if (match?.outputTokenLimit) {
+        limit = match.outputTokenLimit;
+      }
+    }
+  }
+
+  if (limit && limit > 0) {
+    return Math.min(limit, 32768);
+  }
+
+  // 3. Provider fallback: Anthropic requires parameter (16,384); others omit when unknown
+  if (provider.providerType === 'anthropic') {
+    return 16384;
+  }
+
+  return undefined;
+}
+
+/**
  * Streams chat completions using the decrypted key at call time.
  */
 export async function* streamChat(params: {
@@ -128,9 +167,15 @@ export async function* streamChat(params: {
   model: string;
   messages: ChatMessage[];
   signal?: AbortSignal;
+  maxOutputTokens?: number;
 }): AsyncIterable<StreamChunk> {
   const rawKey = await getDecryptedKey(params.provider.id);
   const adapter = getAdapter(params.provider);
+
+  const resolvedTokens =
+    params.maxOutputTokens !== undefined
+      ? params.maxOutputTokens
+      : await resolveMaxOutputTokens(params.provider, params.model);
 
   yield* adapter.streamChat({
     apiKey: rawKey,
@@ -138,5 +183,6 @@ export async function* streamChat(params: {
     model: params.model,
     messages: params.messages,
     signal: params.signal,
+    maxOutputTokens: resolvedTokens,
   });
 }

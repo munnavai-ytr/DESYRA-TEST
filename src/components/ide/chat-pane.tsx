@@ -28,11 +28,19 @@ import {
   listProjectMessages,
   saveProjectMessage,
   updateProject,
+  getAutoContinueEnabled,
   type StoredMessage,
   type Project,
+  type CompletenessIssue,
 } from '@/lib/db';
 import { listFiles } from '@/lib/files';
-import { streamChat, type ProviderError } from '@/lib/ai';
+import {
+  streamChat,
+  resolveMaxOutputTokens,
+  type ProviderError,
+  type StreamFinishReason,
+} from '@/lib/ai';
+import { checkCompleteness, buildContinueMessage } from '@/lib/ai/completeness';
 import { buildAiChatContext } from '@/lib/ai/context';
 import { createStreamingProtocolParser, countNewlines } from '@/lib/ai/fileProtocol';
 import {
@@ -60,6 +68,7 @@ interface MessageItemProps {
   onOpenFile?: (path: string) => void;
   onRetryEdit?: (path: string) => void;
   onUndo?: (message: StoredMessage) => void;
+  onContinueBuild?: (message: StoredMessage) => void;
 }
 
 // Fix 1: Memoize MessageItem so stored messages never re-render during streaming
@@ -69,7 +78,9 @@ const MessageItem = React.memo(
     onOpenFile,
     onRetryEdit,
     onUndo,
+    onContinueBuild,
   }: MessageItemProps) {
+    const [isDismissed, setIsDismissed] = useState(false);
     const isUser = message.role === 'user';
 
     if (isUser) {
@@ -137,16 +148,103 @@ const MessageItem = React.memo(
           />
         </div>
 
-        <span className="text-[10px] text-[var(--disabled)] mt-1.5 px-0.5 opacity-0 group-hover:opacity-100 transition-opacity select-none">
-          {formatRelativeTime(message.createdAt)}
-        </span>
+        {/* Incomplete Build Warning Card */}
+        {!isDismissed && message.completenessIssues && message.completenessIssues.length > 0 && (
+          <div className="mt-3 p-3 rounded-[var(--radius-md)] bg-[var(--surface)] border border-[rgba(245,158,11,0.3)] shadow-xs">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--warning)] mb-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>Build may be incomplete</span>
+            </div>
+            <ul className="space-y-1 text-xs text-[var(--muted)] mb-3 pl-1">
+              {message.completenessIssues.slice(0, 6).map((issue, idx) => {
+                if (issue.type === 'truncated') {
+                  return (
+                    <li key={idx} className="flex items-start gap-1.5">
+                      <span className="text-[var(--warning)] leading-none mt-1">•</span>
+                      <span>Answer was cut off by output limit</span>
+                    </li>
+                  );
+                }
+                if (issue.type === 'incomplete_file') {
+                  return (
+                    <li key={idx} className="flex items-start gap-1.5">
+                      <span className="text-[var(--warning)] leading-none mt-1">•</span>
+                      <span>
+                        <code className="font-mono text-[var(--text)]">{issue.path}</code> (cut off during write)
+                      </span>
+                    </li>
+                  );
+                }
+                return (
+                  <li key={idx} className="flex items-start gap-1.5">
+                    <span className="text-[var(--warning)] leading-none mt-1">•</span>
+                    <span>
+                      <code className="font-mono text-[var(--text)]">{issue.path}</code> (referenced in {issue.sourceFile || 'code'} but not created
+                      {issue.similarFileHint ? (
+                        <> — did you mean <code className="font-mono text-[var(--text)]">{issue.similarFileHint}</code>?</>
+                      ) : null}
+                      )
+                    </span>
+                  </li>
+                );
+              })}
+              {message.completenessIssues.length > 6 && (
+                <li className="text-[11px] text-[var(--disabled)] pt-0.5">
+                  + {message.completenessIssues.length - 6} more issue(s)
+                </li>
+              )}
+            </ul>
+            <div className="flex items-center gap-2 pt-2 border-t border-[var(--border)]">
+              <button
+                type="button"
+                onClick={() => onContinueBuild?.(message)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-[var(--radius-sm)] bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium text-xs transition-colors cursor-pointer active:scale-95 shadow-xs"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                <span>Continue build</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsDismissed(true)}
+                className="px-2.5 py-1 rounded-[var(--radius-sm)] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--elevated)] font-medium text-xs transition-colors cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Message Footer with Timestamp, Tokens, and Finish Reason Notes */}
+        <div className="flex items-center flex-wrap gap-2 mt-1.5 px-0.5 text-[10px] text-[var(--disabled)] select-none">
+          <span>{formatRelativeTime(message.createdAt)}</span>
+          {message.completionTokens !== undefined && (
+            <span>· {message.completionTokens.toLocaleString()} tokens</span>
+          )}
+          {message.finishReason === 'length' && (
+            <span className="text-[var(--warning)] font-medium">
+              · Output limit reached{message.completionTokens ? ` (about ${message.completionTokens.toLocaleString()} tokens)` : ''}. The answer was cut off.
+            </span>
+          )}
+          {message.finishReason === 'safety' && (
+            <span className="text-[var(--muted)]">
+              · Content filtered by provider safety system.
+            </span>
+          )}
+          {message.finishReason === 'interrupted' && (
+            <span className="text-[var(--warning)]">
+              · The connection ended early.
+            </span>
+          )}
+        </div>
       </div>
     );
   },
   (prev, next) =>
     prev.message.id === next.message.id &&
     prev.message.content === next.message.content &&
-    prev.message.undoEntries === next.message.undoEntries
+    prev.message.undoEntries === next.message.undoEntries &&
+    prev.message.completenessIssues === next.message.completenessIssues &&
+    prev.message.finishReason === next.message.finishReason
 );
 
 export interface StreamingFileOperation {
@@ -281,6 +379,7 @@ export function ChatPane({
   const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
   const [lastError, setLastError] = useState<ProviderError | null>(null);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
+  const [autoContinueStatus, setAutoContinueStatus] = useState<string | null>(null);
 
   const hasCheckedAutoStartRef = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -470,75 +569,55 @@ export function ChatPane({
     }
   };
 
-  const executeSend = async (textToSend: string, isAutoStart = false) => {
-    const cleanText = textToSend.trim();
-    if (!cleanText || isStreaming) return;
+  /**
+   * Computes a canonical signature for completeness issues to detect lack of progress.
+   */
+  const computeIssuesSignature = (issues: CompletenessIssue[]): string => {
+    return issues
+      .map((i) => `${i.type}:${i.path || ''}:${i.sourceFile || ''}`)
+      .sort()
+      .join('|');
+  };
 
-    // Check if session is locked
-    const locked = await isSessionLocked();
-    if (locked) {
-      setIsLocked(true);
-      setIsUnlockModalOpen(true);
-      return;
-    }
-
-    // Check if provider is available
-    if (!activeProvider) {
-      toast({
-        type: 'error',
-        title: 'No AI Provider',
-        message: 'Please configure an AI provider with an API key in Settings.',
-      });
-      return;
-    }
-
-    // Check if model is selected
-    if (!activeModel) {
-      toast({
-        type: 'warning',
-        title: 'Model Not Selected',
-        message: `Please select a default model for ${activeProvider.label} in Settings.`,
-      });
-      return;
-    }
-
-    // Clear changed files indicator in tree on new prompt
-    aiFileStore.clearAllChanged(project.id);
-
-    setLastError(null);
-    setInputText('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = '44px';
-    }
-
-    // Format user message
+  /**
+   * Executes a single chat turn (user prompt -> streaming assistant response -> completeness check).
+   */
+  const runTurn = async (
+    userPrompt: string,
+    historyMessages: StoredMessage[],
+    signal: AbortSignal
+  ): Promise<{
+    success: boolean;
+    assistantMessage?: StoredMessage;
+    issues: CompletenessIssue[];
+    aborted: boolean;
+  }> => {
+    // 1. Format and save user message
     const userMessage: StoredMessage = {
       id: `msg_${Date.now()}_u`,
       projectId: project.id,
       role: 'user',
-      content: cleanText,
+      content: userPrompt,
       createdAt: Date.now(),
-      model: activeModel,
-      provider: activeProvider.label,
+      model: activeModel || undefined,
+      provider: activeProvider?.label,
     };
 
-    // Save user message to IndexedDB
     await saveProjectMessage(userMessage);
-    const updatedMessages = [...messages, userMessage];
+    const updatedMessages = [...historyMessages, userMessage];
     setMessages(updatedMessages);
 
-    // Fetch current project files for context
+    // 2. Fetch current project files for context
     const currentFiles = await listFiles(project.id);
 
-    // Build context with System Prompt + Project Files + Compact History
+    // 3. Build context with System Prompt + Project Files + Compact History
     const apiMessages = buildAiChatContext({
       projectFiles: currentFiles,
       conversationHistory: updatedMessages,
       openFilePath,
     });
 
-    // Reset streaming state
-    setIsStreaming(true);
+    // 4. Reset streaming state
     rawTextRef.current = '';
     streamingProseRef.current = '';
     operationsRef.current = [];
@@ -547,12 +626,7 @@ export function ChatPane({
     isUserScrolledUpRef.current = false;
     setIsScrolledUp(false);
 
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
     const assistantMsgId = `msg_${Date.now()}_a`;
-
-    // Initialize change applier session for this turn
     const session = createChangeApplierSession(project.id);
 
     // Protocol parser callback
@@ -590,7 +664,6 @@ export function ChatPane({
 
         case 'fileChunk': {
           session.onFileChunk(event.path, event.text);
-          // Fix 1: Incremental line counter (counting '\n' without split)
           currentFileLineCountRef.current += countNewlines(event.text);
           const op = operationsRef.current.find((o) => o.path === event.path && o.op === 'file');
           if (op) {
@@ -671,23 +744,37 @@ export function ChatPane({
       }
     });
 
-    // Fix 1: Coalesce provider chunks arriving faster than 50ms apart
     const coalescer = createChunkCoalescer((chunkText) => {
       protocolParser.feed(chunkText);
     }, 50);
 
+    let lastFinishReason: StreamFinishReason | undefined = undefined;
+    let lastUsage: { completionTokens?: number; totalTokens?: number } | undefined = undefined;
+    let resolvedMaxTokens: number | undefined = undefined;
+
     try {
+      if (activeProvider && activeModel) {
+        resolvedMaxTokens = await resolveMaxOutputTokens(activeProvider, activeModel);
+      }
+
       const stream = streamChat({
-        provider: activeProvider,
-        model: activeModel,
+        provider: activeProvider!,
+        model: activeModel!,
         messages: apiMessages,
-        signal: abortController.signal,
+        signal,
+        maxOutputTokens: resolvedMaxTokens,
       });
 
       for await (const chunk of stream) {
         if (chunk.text) {
           rawTextRef.current += chunk.text;
           coalescer.push(chunk.text);
+        }
+        if (chunk.finishReason) {
+          lastFinishReason = chunk.finishReason;
+        }
+        if (chunk.usage) {
+          lastUsage = chunk.usage;
         }
       }
 
@@ -697,22 +784,44 @@ export function ChatPane({
       flushUiNow();
 
       if (rawTextRef.current) {
+        const latestFiles = await listFiles(project.id);
+        const issues = checkCompleteness({
+          operations: operationsRef.current,
+          incompleteFiles: sessionResult.incompleteFiles,
+          finishReason: lastFinishReason,
+          projectFiles: latestFiles,
+        });
+
         const assistantMessage: StoredMessage = {
           id: assistantMsgId,
           projectId: project.id,
           role: 'assistant',
           content: rawTextRef.current,
           createdAt: Date.now(),
-          model: activeModel,
-          provider: activeProvider.label,
+          model: activeModel || undefined,
+          provider: activeProvider?.label,
           undoEntries: sessionResult.undoEntries,
           undoDisabledReason: sessionResult.undoDisabledReason,
           incompleteFiles: sessionResult.incompleteFiles.length > 0 ? sessionResult.incompleteFiles : undefined,
           failedEdits: sessionResult.failedEdits.length > 0 ? sessionResult.failedEdits : undefined,
+          finishReason: lastFinishReason,
+          completionTokens: lastUsage?.completionTokens,
+          maxOutputTokens: resolvedMaxTokens,
+          completenessIssues: issues.length > 0 ? issues : undefined,
         };
+
         await saveProjectMessage(assistantMessage);
         setMessages((prev) => [...prev, assistantMessage]);
+
+        return {
+          success: true,
+          assistantMessage,
+          issues,
+          aborted: false,
+        };
       }
+
+      return { success: true, issues: [], aborted: false };
     } catch (err: unknown) {
       coalescer.flush();
       protocolParser.end();
@@ -720,25 +829,36 @@ export function ChatPane({
       flushUiNow();
       const errorMsg = err instanceof Error ? err.message : String(err);
 
-      if (abortController.signal.aborted) {
-        // Saved stopped text
+      if (signal.aborted) {
         if (rawTextRef.current) {
+          const latestFiles = await listFiles(project.id);
+          const issues = checkCompleteness({
+            operations: operationsRef.current,
+            incompleteFiles: sessionResult.incompleteFiles,
+            finishReason: 'interrupted',
+            projectFiles: latestFiles,
+          });
+
           const partialMessage: StoredMessage = {
             id: assistantMsgId,
             projectId: project.id,
             role: 'assistant',
             content: rawTextRef.current,
             createdAt: Date.now(),
-            model: activeModel,
-            provider: activeProvider.label,
+            model: activeModel || undefined,
+            provider: activeProvider?.label,
             undoEntries: sessionResult.undoEntries,
             undoDisabledReason: sessionResult.undoDisabledReason,
             incompleteFiles: sessionResult.incompleteFiles.length > 0 ? sessionResult.incompleteFiles : undefined,
             failedEdits: sessionResult.failedEdits.length > 0 ? sessionResult.failedEdits : undefined,
+            finishReason: 'interrupted',
+            maxOutputTokens: resolvedMaxTokens,
+            completenessIssues: issues.length > 0 ? issues : undefined,
           };
           await saveProjectMessage(partialMessage);
           setMessages((prev) => [...prev, partialMessage]);
         }
+        return { success: false, issues: [], aborted: true };
       } else {
         console.error('Chat error:', err);
         const isRateLimit = errorMsg.includes('429') || errorMsg.includes('Rate limit');
@@ -762,15 +882,126 @@ export function ChatPane({
             message: errorMsg,
           });
         }
+        return { success: false, issues: [], aborted: false };
+      }
+    }
+  };
+
+  const executeSend = async (textToSend: string, isAutoStart = false) => {
+    const cleanText = textToSend.trim();
+    if (!cleanText || isStreaming) return;
+
+    // Check if session is locked
+    const locked = await isSessionLocked();
+    if (locked) {
+      setIsLocked(true);
+      setIsUnlockModalOpen(true);
+      return;
+    }
+
+    // Check if provider is available
+    if (!activeProvider) {
+      toast({
+        type: 'error',
+        title: 'No AI Provider',
+        message: 'Please configure an AI provider with an API key in Settings.',
+      });
+      return;
+    }
+
+    // Check if model is selected
+    if (!activeModel) {
+      toast({
+        type: 'warning',
+        title: 'Model Not Selected',
+        message: `Please select a default model for ${activeProvider.label} in Settings.`,
+      });
+      return;
+    }
+
+    // Clear changed files indicator in tree on new prompt
+    aiFileStore.clearAllChanged(project.id);
+
+    setLastError(null);
+    setInputText('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '44px';
+    }
+
+    setIsStreaming(true);
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const currentHistory = await listProjectMessages(project.id);
+      const initialTurn = await runTurn(cleanText, currentHistory, abortController.signal);
+
+      if (!initialTurn.success || initialTurn.aborted || !initialTurn.assistantMessage) {
+        return;
+      }
+
+      // Check auto-continue conditions:
+      // Enabled in settings, has completeness issues, finishReason wasn't safety, not aborted
+      const autoContinueEnabled = await getAutoContinueEnabled();
+      if (
+        autoContinueEnabled &&
+        initialTurn.issues.length > 0 &&
+        initialTurn.assistantMessage.finishReason !== 'safety' &&
+        !abortController.signal.aborted
+      ) {
+        let currentIssues = initialTurn.issues;
+        let previousSignature = computeIssuesSignature(currentIssues);
+
+        for (let round = 1; round <= 3; round++) {
+          if (abortController.signal.aborted) break;
+
+          setAutoContinueStatus(`Auto-continue ${round}/3`);
+
+          const currentFiles = await listFiles(project.id);
+          const continuePrompt = buildContinueMessage(currentIssues, currentFiles);
+          const historyForRound = await listProjectMessages(project.id);
+
+          const roundTurn = await runTurn(continuePrompt, historyForRound, abortController.signal);
+
+          if (!roundTurn.success || roundTurn.aborted || !roundTurn.assistantMessage) {
+            break;
+          }
+
+          if (roundTurn.assistantMessage.finishReason === 'safety') {
+            break;
+          }
+
+          if (roundTurn.issues.length === 0) {
+            // All missing items completed!
+            break;
+          }
+
+          const newSignature = computeIssuesSignature(roundTurn.issues);
+          if (newSignature === previousSignature) {
+            // No progress made on unresolved files; break to prevent looping
+            break;
+          }
+
+          previousSignature = newSignature;
+          currentIssues = roundTurn.issues;
+        }
       }
     } finally {
       setIsStreaming(false);
+      setAutoContinueStatus(null);
       setStreamingUi({ prose: '', operations: [] });
       rawTextRef.current = '';
       streamingProseRef.current = '';
       operationsRef.current = [];
       abortControllerRef.current = null;
     }
+  };
+
+  const handleContinueBuild = async (msg: StoredMessage) => {
+    if (!msg.completenessIssues || msg.completenessIssues.length === 0) return;
+    const currentFiles = await listFiles(project.id);
+    const continuePrompt = buildContinueMessage(msg.completenessIssues, currentFiles);
+    executeSend(continuePrompt);
   };
 
   const executeSendRef = useRef(executeSend);
@@ -939,6 +1170,7 @@ export function ChatPane({
               onOpenFile={onOpenFile}
               onRetryEdit={handleRetryFailedEdit}
               onUndo={handleUndo}
+              onContinueBuild={handleContinueBuild}
             />
           ))}
 
@@ -948,6 +1180,12 @@ export function ChatPane({
               <div className="flex items-center gap-1.5 mb-1 select-none">
                 <span className="text-[12px] font-semibold text-[var(--muted)]">DESYRA</span>
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse" />
+                {autoContinueStatus && (
+                  <span className="ml-1.5 px-2 py-0.5 rounded-[var(--radius-sm)] bg-[rgba(255,107,26,0.12)] border border-[rgba(255,107,26,0.25)] text-[10px] text-[var(--accent)] font-medium flex items-center gap-1 animate-in fade-in">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                    <span>{autoContinueStatus}</span>
+                  </span>
+                )}
               </div>
               <div className="w-full text-[15px] sm:text-[14.5px] leading-[1.6] text-[var(--text)] [overflow-wrap:anywhere]">
                 {streamingUi.prose ? (

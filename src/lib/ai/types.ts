@@ -12,6 +12,7 @@ export interface ModelInfo {
   name: string;
   provider: string;
   contextWindow?: number;
+  outputTokenLimit?: number;
   supportsVision?: boolean;
   tags: ModelTag[];
   description?: string;
@@ -38,9 +39,17 @@ export interface ProviderError {
   retryAfterSeconds?: number;
 }
 
+export type StreamFinishReason =
+  | 'stop'
+  | 'length'
+  | 'safety'
+  | 'interrupted'
+  | 'other';
+
 export interface StreamChunk {
   text?: string;
   done: boolean;
+  finishReason?: StreamFinishReason;
   usage?: {
     promptTokens?: number;
     completionTokens?: number;
@@ -57,5 +66,6 @@ export interface ProviderAdapter {
     model: string;
     messages: ChatMessage[];
     signal?: AbortSignal;
+    maxOutputTokens?: number;
   }): AsyncIterable<StreamChunk>;
 }
