@@ -3,15 +3,16 @@
  * Composes the AI build system prompt when a project has an active Design System.
  */
 
-import type { DesignSpec } from '@/lib/design/types';
+import type { DesignSpec, ProjectPlan } from '@/lib/design/types';
 import { ARCHETYPES } from '@/lib/design/archetypes';
 import { STYLE_PRESETS } from '@/lib/design/presets';
 import { FONT_PAIRS } from '@/lib/design/fonts';
 import { generateClassReference } from '@/lib/design/css/generateClassReference';
 import { getRecipesForArchetype } from '@/lib/design/recipes';
 import { ANTI_GENERIC_QUALITY_RULES } from '@/lib/design/antiGeneric';
+import { ICON_CDN_URL } from '@/lib/design/constants';
 
-export function buildDesignSystemPrompt(spec: DesignSpec): string {
+export function buildDesignSystemPrompt(spec: DesignSpec, plan?: ProjectPlan | null): string {
   const archetype = ARCHETYPES[spec.archetypeId] || ARCHETYPES['general'];
   const preset = STYLE_PRESETS[spec.presetId] || STYLE_PRESETS['minimal'];
   const fontPair = FONT_PAIRS[spec.fontPairId] || FONT_PAIRS['inter-neutral'];
@@ -32,14 +33,41 @@ export function buildDesignSystemPrompt(spec: DesignSpec): string {
     .map((r) => `### Recipe: ${r.title} (${r.category})\n\`\`\`html\n${r.snippet}\n\`\`\``)
     .join('\n\n');
 
+  let productBriefSection = '';
+  if (plan && plan.brief && (plan.status === 'approved' || plan.status === 'skipped')) {
+    const brief = plan.brief;
+    const selectedIds = new Set(plan.selections?.selectedFeatureIds || brief.features.map((f) => f.id));
+    const activeFeatures = brief.features.filter((f) => selectedIds.has(f.id));
+    const customList =
+      plan.selections?.customFeatures && plan.selections.customFeatures.length > 0
+        ? `\nCustom Requirements:\n${plan.selections.customFeatures.map((cf) => `- ${cf}`).join('\n')}`
+        : '';
+
+    productBriefSection = `
+## APPROVED PRODUCT BRIEF & DIRECTION: "${brief.directionName}"
+- App Type: ${brief.appType}
+- Target Audience: ${brief.audience}
+- Core Need: ${brief.coreProblem}
+- Vibe & Voice: ${brief.vibeWords.join(', ')} — ${brief.tone}
+- Copy Language: ${brief.copyLanguage === 'bn' ? 'Bengali (bn)' : 'English (en)'}
+- Views / Screen Flows:
+${brief.screens.map((s) => `- ${s.name}: ${s.purpose}`).join('\n')}
+- Features to Implement (Selected by user):
+${activeFeatures.map((f) => `- [${f.essential ? 'ESSENTIAL' : 'FEATURE'}] ${f.title}: ${f.description}`).join('\n')}${customList}
+- Traps & Risks to Avoid:
+${brief.risks.map((r) => `- ${r}`).join('\n')}
+- Content Guidance: ${brief.contentNotes}
+`;
+  }
+
   return `You are DESYRA, an expert app builder and UI designer working inside an IDE. Build real, working apps.
 
 ## Target Environment & Sandbox
 - Build static web apps: index.html + css/js files, vanilla JavaScript (or Alpine.js via CDN), and Google Fonts via <link> tags.
 - Allowed CDNs: https://cdn.jsdelivr.net, https://cdn.tailwindcss.com, https://unpkg.com, https://cdnjs.cloudflare.com, https://fonts.googleapis.com, https://esm.sh.
-- Icons: Use Lucide icons UMD script (<script src="https://unpkg.com/lucide@0.474.0/dist/umd/lucide.min.js"></script>) and call lucide.createIcons() after DOM rendering. NEVER use emojis as UI icons in buttons, badges, or headers.
+- Icons: Use Lucide icons UMD script (<script src="${ICON_CDN_URL}"></script>) and call lucide.createIcons() after DOM rendering. NEVER use emojis as UI icons in buttons, badges, or headers.
 - Storage: localStorage and sessionStorage work normally (up to 1 MB total).
-
+${productBriefSection}
 ## ACTIVE DESIGN SYSTEM (DESYRA Design Engine)
 This project uses an automated, deterministic Design System installed in css/tokens.css, css/base.css, and css/components.css.
 

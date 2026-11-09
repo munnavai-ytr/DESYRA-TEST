@@ -2,7 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import { notify } from '@/components/ui/toast';
 import type { ProviderType } from '@/lib/providers';
 import type { EncryptedPayload } from '@/lib/crypto';
-import type { DesignSpec } from '@/lib/design/types';
+import type { DesignSpec, ProjectPlan, ProjectCritique, DesignQuality } from '@/lib/design/types';
 
 export interface Project {
   id: string;
@@ -12,6 +12,8 @@ export interface Project {
   updatedAt: number;
   autoStarted?: boolean;
   design?: DesignSpec;
+  plan?: ProjectPlan;
+  critique?: ProjectCritique;
 }
 
 export interface ProjectFile {
@@ -67,6 +69,7 @@ export interface StoredMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
   createdAt: number;
+  kind?: 'normal' | 'plan_card';
   model?: string;
   provider?: string;
   undoEntries?: FileUndoEntry[];
@@ -717,6 +720,144 @@ export async function setAutoContinueEnabled(enabled: boolean): Promise<void> {
     });
   } catch (error) {
     console.error('[DESYRA DB] Failed to set auto-continue setting:', error);
+  }
+}
+
+const DESIGN_QUALITY_KEY = 'desyra_design_quality';
+const REVIEW_BEFORE_BUILD_KEY = 'desyra_review_design_before_build';
+const RUN_CRITIC_AUTO_KEY = 'desyra_run_critic_automatically';
+
+/**
+ * Gets design quality setting ('fast' | 'standard' | 'best'). Defaults to 'standard'.
+ */
+export async function getDesignQualitySetting(): Promise<DesignQuality> {
+  const database = getDb();
+  if (!database) {
+    if (typeof window !== 'undefined') {
+      const val = localStorage.getItem(DESIGN_QUALITY_KEY);
+      if (val === 'fast' || val === 'standard' || val === 'best') return val;
+    }
+    return 'standard';
+  }
+  try {
+    const item = await database.meta.get(DESIGN_QUALITY_KEY);
+    if (item && (item.value === 'fast' || item.value === 'standard' || item.value === 'best')) {
+      return item.value;
+    }
+    return 'standard';
+  } catch {
+    return 'standard';
+  }
+}
+
+/**
+ * Updates design quality setting.
+ */
+export async function setDesignQualitySetting(quality: DesignQuality): Promise<void> {
+  const database = getDb();
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(DESIGN_QUALITY_KEY, quality);
+  }
+  if (!database) return;
+  try {
+    await database.meta.put({
+      key: DESIGN_QUALITY_KEY,
+      value: quality,
+    });
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to set design quality setting:', error);
+  }
+}
+
+/**
+ * Checks whether user wants to review design before building (defaults to true).
+ */
+export async function getReviewDesignBeforeBuild(): Promise<boolean> {
+  const database = getDb();
+  if (!database) {
+    if (typeof window !== 'undefined') {
+      const val = localStorage.getItem(REVIEW_BEFORE_BUILD_KEY);
+      return val === null ? true : val === 'true';
+    }
+    return true;
+  }
+  try {
+    const item = await database.meta.get(REVIEW_BEFORE_BUILD_KEY);
+    if (!item) return true;
+    return Boolean(item.value);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Updates review design before building setting.
+ */
+export async function setReviewDesignBeforeBuild(enabled: boolean): Promise<void> {
+  const database = getDb();
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(REVIEW_BEFORE_BUILD_KEY, String(enabled));
+  }
+  if (!database) return;
+  try {
+    await database.meta.put({
+      key: REVIEW_BEFORE_BUILD_KEY,
+      value: enabled,
+    });
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to set review design before build setting:', error);
+  }
+}
+
+/**
+ * Checks whether AI design critic runs automatically after first build.
+ * Default ON only for 'best' quality if not explicitly set.
+ */
+export async function getRunCriticAutomatically(): Promise<boolean> {
+  const database = getDb();
+  let explicitValue: boolean | null = null;
+
+  if (database) {
+    try {
+      const item = await database.meta.get(RUN_CRITIC_AUTO_KEY);
+      if (item && item.value !== undefined) {
+        explicitValue = Boolean(item.value);
+      }
+    } catch {
+      // Fallback
+    }
+  } else if (typeof window !== 'undefined') {
+    const val = localStorage.getItem(RUN_CRITIC_AUTO_KEY);
+    if (val !== null) {
+      explicitValue = val === 'true';
+    }
+  }
+
+  if (explicitValue !== null) {
+    return explicitValue;
+  }
+
+  // Default ON only for 'best'
+  const quality = await getDesignQualitySetting();
+  return quality === 'best';
+}
+
+/**
+ * Updates run critic automatically setting.
+ */
+export async function setRunCriticAutomatically(enabled: boolean): Promise<void> {
+  const database = getDb();
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(RUN_CRITIC_AUTO_KEY, String(enabled));
+  }
+  if (!database) return;
+  try {
+    await database.meta.put({
+      key: RUN_CRITIC_AUTO_KEY,
+      value: enabled,
+    });
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to set run critic automatically setting:', error);
   }
 }
 

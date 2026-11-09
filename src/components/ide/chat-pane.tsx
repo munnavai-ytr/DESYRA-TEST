@@ -30,11 +30,18 @@ import {
   updateProject,
   getProject,
   getAutoContinueEnabled,
+  getDesignQualitySetting,
+  getReviewDesignBeforeBuild,
+  setReviewDesignBeforeBuild,
+  getRunCriticAutomatically,
   type StoredMessage,
   type Project,
   type CompletenessIssue,
 } from '@/lib/db';
-import type { DesignSpec } from '@/lib/design/types';
+import type { DesignSpec, ProjectPlan } from '@/lib/design/types';
+import { PlanCard, buildSpecFromSelections } from '@/components/chat/plan-card';
+import { generateBrief } from '@/lib/design/brief';
+import { runDesignCritic } from '@/lib/design/critic';
 import { listFiles } from '@/lib/files';
 import {
   streamChat,
@@ -80,6 +87,11 @@ interface MessageItemProps {
   onRetryEdit?: (path: string) => void;
   onUndo?: (message: StoredMessage) => void;
   onContinueBuild?: (message: StoredMessage) => void;
+  onApprovePlan?: (updatedPlan: ProjectPlan, spec: DesignSpec) => void;
+  onRegeneratePlan?: (message: StoredMessage) => void;
+  onSkipPlanReview?: (planData: ProjectPlan) => void;
+  onAlwaysSkipPlanReview?: (planData: ProjectPlan) => void;
+  isPlanRegenerating?: boolean;
 }
 
 // Fix 1: Memoize MessageItem so stored messages never re-render during streaming
@@ -90,8 +102,36 @@ const MessageItem = React.memo(
     onRetryEdit,
     onUndo,
     onContinueBuild,
+    onApprovePlan,
+    onRegeneratePlan,
+    onSkipPlanReview,
+    onAlwaysSkipPlanReview,
+    isPlanRegenerating,
   }: MessageItemProps) {
     const [isDismissed, setIsDismissed] = useState(false);
+
+    // If message is an interactive Plan Card, render dedicated PlanCard component
+    if (message.kind === 'plan_card') {
+      let planData: ProjectPlan | null = null;
+      try {
+        planData = JSON.parse(message.content);
+      } catch {
+        // invalid JSON
+      }
+      if (!planData) return null;
+
+      return (
+        <PlanCard
+          plan={planData}
+          onApprove={(updatedPlan, spec) => onApprovePlan?.(updatedPlan, spec)}
+          onRegenerate={() => onRegeneratePlan?.(message)}
+          onSkipReview={() => onSkipPlanReview?.(planData!)}
+          onAlwaysSkipReview={() => onAlwaysSkipPlanReview?.(planData!)}
+          isRegenerating={isPlanRegenerating}
+        />
+      );
+    }
+
     const isUser = message.role === 'user';
 
     if (isUser) {
@@ -411,6 +451,7 @@ export function ChatPane({
   const [lastError, setLastError] = useState<ProviderError | null>(null);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const [autoContinueStatus, setAutoContinueStatus] = useState<string | null>(null);
+  const [isPlanRegenerating, setIsPlanRegenerating] = useState(false);
 
   const hasCheckedAutoStartRef = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -617,19 +658,21 @@ export function ChatPane({
     userPrompt: string,
     historyMessages: StoredMessage[],
     signal: AbortSignal,
-    designSpec?: DesignSpec | null
+    designSpec?: DesignSpec | null,
+    plan?: ProjectPlan | null
   ): Promise<{
     success: boolean;
     assistantMessage?: StoredMessage;
     issues: CompletenessIssue[];
     aborted: boolean;
   }> => {
-    // Resolve design explicitly: passed designSpec, or fallback to database lookup
+    // Resolve design & plan explicitly: passed values, or fallback to database lookup
+    const dbProj = await getProject(project.id);
     let resolvedDesign: DesignSpec | null = designSpec ? extractDesignSpec(designSpec) : null;
     if (!resolvedDesign) {
-      const dbProj = await getProject(project.id);
       resolvedDesign = extractDesignSpec(dbProj?.design);
     }
+    const resolvedPlan: ProjectPlan | null = plan || dbProj?.plan || null;
 
     const promptKind: 'design' | 'basic' = resolvedDesign ? 'design' : 'basic';
     const designSpecId = resolvedDesign
@@ -660,6 +703,7 @@ export function ChatPane({
       conversationHistory: updatedMessages,
       openFilePath,
       projectDesign: resolvedDesign,
+      projectPlan: resolvedPlan,
     });
 
     // 4. Reset streaming state
@@ -861,6 +905,27 @@ export function ChatPane({
         await saveProjectMessage(assistantMessage);
         setMessages((prev) => [...prev, assistantMessage]);
 
+        // Auto-run AI design critic in the background if enabled and first successful build
+        if (lastFinishReason === 'stop' && issues.length === 0 && resolvedDesign && activeProvider && activeModel) {
+          getRunCriticAutomatically().then((shouldRun) => {
+            if (shouldRun) {
+              getProject(project.id).then((freshProj) => {
+                if (!freshProj?.critique) {
+                  runDesignCritic({
+                    projectId: project.id,
+                    files: latestFiles,
+                    spec: resolvedDesign!,
+                    brief: freshProj?.plan?.brief,
+                    lintResult: null,
+                    provider: activeProvider,
+                    model: activeModel,
+                  }).catch((err) => console.warn('[DESYRA] Auto-critic background error:', err));
+                }
+              });
+            }
+          });
+        }
+
         return {
           success: true,
           assistantMessage,
@@ -938,6 +1003,169 @@ export function ChatPane({
     }
   };
 
+  const handleApprovePlan = async (updatedPlan: ProjectPlan, spec: DesignSpec) => {
+    setIsStreaming(true);
+    setAutoContinueStatus('Starting build...');
+    try {
+      await updateProject(project.id, { plan: updatedPlan, design: spec as any });
+      await installDesignSystem(project.id, spec);
+      if (onDesignUpdated) {
+        onDesignUpdated(spec);
+      }
+
+      // Update stored plan_card message in state & IndexedDB
+      const currentMsgs = await listProjectMessages(project.id);
+      const planMsg = currentMsgs.find((m) => m.kind === 'plan_card');
+      if (planMsg) {
+        const updatedMsg: StoredMessage = {
+          ...planMsg,
+          content: JSON.stringify(updatedPlan),
+        };
+        await saveProjectMessage(updatedMsg);
+        setMessages((prev) => prev.map((m) => (m.id === planMsg.id ? updatedMsg : m)));
+      }
+
+      // Start the build turn with runTurn
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      const history = await listProjectMessages(project.id);
+      const buildPrompt =
+        project.idea || 'Build the web application matching the approved design brief and selected features.';
+
+      const buildTurn = await runTurn(
+        buildPrompt,
+        history,
+        abortController.signal,
+        spec,
+        updatedPlan
+      );
+
+      // Check auto-continue if needed
+      if (buildTurn.success && buildTurn.assistantMessage && buildTurn.issues.length > 0) {
+        const autoContinueEnabled = await getAutoContinueEnabled();
+        if (
+          autoContinueEnabled &&
+          buildTurn.assistantMessage.finishReason !== 'safety' &&
+          !abortController.signal.aborted
+        ) {
+          let currentIssues = buildTurn.issues;
+          let previousSignature = computeIssuesSignature(currentIssues);
+
+          for (let round = 1; round <= 3; round++) {
+            if (abortController.signal.aborted) break;
+            setAutoContinueStatus(`Auto-continue ${round}/3`);
+            const currentFiles = await listFiles(project.id);
+            const continuePrompt = buildContinueMessage(currentIssues, currentFiles, spec);
+            const historyForRound = await listProjectMessages(project.id);
+
+            const roundTurn = await runTurn(
+              continuePrompt,
+              historyForRound,
+              abortController.signal,
+              spec,
+              updatedPlan
+            );
+
+            if (!roundTurn.success || roundTurn.aborted || !roundTurn.assistantMessage) break;
+            if (roundTurn.assistantMessage.finishReason === 'safety') break;
+            if (roundTurn.issues.length === 0) break;
+            const newSig = computeIssuesSignature(roundTurn.issues);
+            if (newSig === previousSignature) break;
+            currentIssues = roundTurn.issues;
+            previousSignature = newSig;
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Plan approval build error:', err);
+      toast({
+        type: 'error',
+        title: 'Build Failed',
+        message: err instanceof Error ? err.message : 'Could not start build.',
+      });
+    } finally {
+      setIsStreaming(false);
+      setAutoContinueStatus(null);
+    }
+  };
+
+  const handleRegeneratePlan = async (msg: StoredMessage) => {
+    if (isPlanRegenerating || !activeProvider || !activeModel) return;
+    setIsPlanRegenerating(true);
+    try {
+      let currentPlan: ProjectPlan | null = null;
+      try {
+        currentPlan = JSON.parse(msg.content);
+      } catch {}
+      const prevDirections = currentPlan?.brief?.directionName
+        ? [currentPlan.brief.directionName]
+        : [];
+
+      const newBrief = await generateBrief({
+        idea: project.idea || msg.content,
+        previousDirections: prevDirections,
+        provider: activeProvider,
+        model: activeModel,
+      });
+
+      const newPlan: ProjectPlan = {
+        brief: newBrief,
+        selections: {
+          presetId: newBrief.recommended.presetId,
+          fontPairId: newBrief.recommended.fontPairId,
+          mode: newBrief.recommended.mode,
+          defaultMode: newBrief.recommended.defaultMode,
+          density: newBrief.recommended.density,
+          radius: newBrief.recommended.radius,
+          motion: newBrief.recommended.motion,
+          primarySeed: newBrief.recommended.paletteSeeds[0] || '#2563eb',
+          accentSeed: newBrief.recommended.paletteSeeds[1] || '#06b6d4',
+          bgSeed: newBrief.recommended.paletteSeeds[2] || '#f59e0b',
+          selectedFeatureIds: newBrief.features.map((f) => f.id),
+          customFeatures: [],
+        },
+        status: 'pending',
+      };
+
+      await updateProject(project.id, { plan: newPlan });
+      const updatedMsg: StoredMessage = {
+        ...msg,
+        content: JSON.stringify(newPlan),
+      };
+      await saveProjectMessage(updatedMsg);
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? updatedMsg : m)));
+    } catch (err) {
+      console.error('Failed to regenerate plan:', err);
+      toast({
+        type: 'error',
+        title: 'Regeneration Failed',
+        message: 'Could not generate a new design direction.',
+      });
+    } finally {
+      setIsPlanRegenerating(false);
+    }
+  };
+
+  const handleSkipPlanReview = async (planData: ProjectPlan) => {
+    const approvedPlan: ProjectPlan = {
+      ...planData,
+      status: 'skipped',
+      approvedAt: Date.now(),
+    };
+    const spec = buildSpecFromSelections(approvedPlan.selections, approvedPlan.brief.copyLanguage);
+    await handleApprovePlan(approvedPlan, spec);
+  };
+
+  const handleAlwaysSkipPlanReview = async (planData: ProjectPlan) => {
+    await setReviewDesignBeforeBuild(false);
+    toast({
+      type: 'info',
+      title: 'Review Skipped',
+      message: 'Future builds will skip design review. You can re-enable this in Settings.',
+    });
+    await handleSkipPlanReview(planData);
+  };
+
   const executeSend = async (textToSend: string, isAutoStart = false) => {
     const cleanText = textToSend.trim();
     if (!cleanText || isStreaming) return;
@@ -980,22 +1208,110 @@ export function ChatPane({
       extractDesignSpec(dbProj?.design) ||
       extractDesignSpec(projectDesign) ||
       extractDesignSpec(project.design);
+    let planForTurn: ProjectPlan | null = dbProj?.plan || null;
 
     if (!designForTurn) {
       const existingHistory = await listProjectMessages(project.id);
       const existingFiles = await listFiles(project.id);
       const isPre7AProject =
-        existingHistory.length > 0 ||
+        existingHistory.some((m) => m.kind !== 'plan_card') ||
         existingFiles.some((f) => !MANAGED_DESIGN_FILES.includes(f.path));
 
       if (!isPre7AProject) {
-        const { spec } = await ensureProjectDesign(
-          project.id,
-          cleanText || project.idea || 'General App'
-        );
-        designForTurn = spec;
-        if (onDesignUpdated) {
-          onDesignUpdated(spec);
+        const quality = await getDesignQualitySetting();
+
+        if (quality !== 'fast' && !planForTurn) {
+          // Standard or Best quality -> generate Idea Brief & Plan Card!
+          setIsStreaming(true);
+          setAutoContinueStatus('Analyzing your idea...');
+
+          // Save user prompt message
+          const userMessage: StoredMessage = {
+            id: `msg_${Date.now()}_u`,
+            projectId: project.id,
+            role: 'user',
+            content: cleanText,
+            createdAt: Date.now(),
+            model: activeModel || undefined,
+            provider: activeProvider?.label,
+          };
+          await saveProjectMessage(userMessage);
+          setMessages((prev) => [...prev, userMessage]);
+
+          const abortController = new AbortController();
+          abortControllerRef.current = abortController;
+
+          const brief = await generateBrief({
+            idea: cleanText || project.idea,
+            provider: activeProvider,
+            model: activeModel,
+            signal: abortController.signal,
+          });
+
+          const pendingPlan: ProjectPlan = {
+            brief,
+            selections: {
+              presetId: brief.recommended.presetId,
+              fontPairId: brief.recommended.fontPairId,
+              mode: brief.recommended.mode,
+              defaultMode: brief.recommended.defaultMode,
+              density: brief.recommended.density,
+              radius: brief.recommended.radius,
+              motion: brief.recommended.motion,
+              primarySeed: brief.recommended.paletteSeeds[0] || '#2563eb',
+              accentSeed: brief.recommended.paletteSeeds[1] || '#06b6d4',
+              bgSeed: brief.recommended.paletteSeeds[2] || '#f59e0b',
+              selectedFeatureIds: brief.features.map((f) => f.id),
+              customFeatures: [],
+            },
+            status: 'pending',
+          };
+          await updateProject(project.id, { plan: pendingPlan });
+          planForTurn = pendingPlan;
+
+          const reviewBeforeBuild = await getReviewDesignBeforeBuild();
+          if (reviewBeforeBuild) {
+            // Post Plan Card message into chat
+            const planMsg: StoredMessage = {
+              id: `plan_${Date.now()}`,
+              projectId: project.id,
+              role: 'assistant',
+              content: JSON.stringify(pendingPlan),
+              kind: 'plan_card',
+              createdAt: Date.now(),
+            };
+            await saveProjectMessage(planMsg);
+            setMessages((prev) => [...prev, planMsg]);
+            setIsStreaming(false);
+            setAutoContinueStatus(null);
+            return; // Conversation STOPS here and waits for the user to review the Plan Card
+          }
+
+          // If review toggle is OFF, auto-approve and proceed to build immediately
+          const approvedPlan: ProjectPlan = {
+            ...pendingPlan,
+            status: 'approved',
+            approvedAt: Date.now(),
+          };
+          await updateProject(project.id, { plan: approvedPlan });
+          planForTurn = approvedPlan;
+          const liveSpec = buildSpecFromSelections(approvedPlan.selections, approvedPlan.brief.copyLanguage);
+          await installDesignSystem(project.id, liveSpec);
+          designForTurn = liveSpec;
+          if (onDesignUpdated) {
+            onDesignUpdated(liveSpec);
+          }
+          setAutoContinueStatus(null);
+        } else {
+          // Fast mode or fallback: deterministic 7A flow
+          const { spec } = await ensureProjectDesign(
+            project.id,
+            cleanText || project.idea || 'General App'
+          );
+          designForTurn = spec;
+          if (onDesignUpdated) {
+            onDesignUpdated(spec);
+          }
         }
       }
     }
@@ -1016,7 +1332,8 @@ export function ChatPane({
         cleanText,
         currentHistory,
         abortController.signal,
-        designForTurn
+        designForTurn,
+        planForTurn
       );
 
       if (!initialTurn.success || initialTurn.aborted || !initialTurn.assistantMessage) {
@@ -1264,6 +1581,11 @@ export function ChatPane({
               onRetryEdit={handleRetryFailedEdit}
               onUndo={handleUndo}
               onContinueBuild={handleContinueBuild}
+              onApprovePlan={handleApprovePlan}
+              onRegeneratePlan={handleRegeneratePlan}
+              onSkipPlanReview={handleSkipPlanReview}
+              onAlwaysSkipPlanReview={handleAlwaysSkipPlanReview}
+              isPlanRegenerating={isPlanRegenerating}
             />
           ))}
 

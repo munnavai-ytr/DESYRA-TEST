@@ -148,3 +148,103 @@ export interface LintResult {
   };
   issues: LintIssue[];
 }
+
+export type DesignQuality = 'fast' | 'standard' | 'best';
+
+export interface BriefScreen {
+  name: string;
+  purpose: string;
+}
+
+export interface BriefFeature {
+  id: string;
+  title: string;
+  description: string;
+  essential: boolean;
+}
+
+export interface BriefRecommendation {
+  presetId: string;
+  fontPairId: string;
+  mode: DesignMode;
+  defaultMode: 'dark' | 'light';
+  density: DesignDensity;
+  radius: DesignRadius;
+  motion: DesignMotion;
+  paletteSeeds: [string, string, string];
+}
+
+export interface IdeaBrief {
+  appType: string;
+  audience: string;
+  coreProblem: string;
+  vibeWords: string[];
+  tone: string;
+  copyLanguage: 'en' | 'bn';
+  screens: BriefScreen[];
+  features: BriefFeature[];
+  contentNotes: string;
+  directionName: string;
+  recommended: BriefRecommendation;
+  risks: string[];
+}
+
+export interface PlanSelections {
+  presetId: string;
+  fontPairId: string;
+  mode: DesignMode;
+  defaultMode: 'dark' | 'light';
+  density: DesignDensity;
+  radius: DesignRadius;
+  motion: DesignMotion;
+  primarySeed: string;
+  accentSeed?: string;
+  bgSeed?: string;
+  selectedFeatureIds: string[];
+  customFeatures: string[];
+}
+
+export interface ProjectPlan {
+  brief: IdeaBrief;
+  selections: PlanSelections;
+  status: 'pending' | 'approved' | 'skipped';
+  approvedAt?: number;
+}
+
+export interface CritiqueCodeEvidence {
+  file: string;
+  line?: number;
+  snippet: string;
+}
+
+export interface CritiqueIssue {
+  id: string;
+  category: string;
+  severity: 'high' | 'med' | 'low';
+  title: string;
+  description: string;
+  codeEvidence?: CritiqueCodeEvidence;
+  fixSuggestion: string;
+}
+
+export interface CritiqueRubric {
+  antiGeneric: number;
+  authenticity: number;
+  hierarchy: number;
+  contrast: number;
+  density: number;
+  motion: number;
+  microInteractions: number;
+  responsive: number;
+}
+
+export interface ProjectCritique {
+  score: number;
+  rubric: CritiqueRubric;
+  summary: string;
+  strengths: string[];
+  issues: CritiqueIssue[];
+  quickWins: string[];
+  createdAt: number;
+}
+

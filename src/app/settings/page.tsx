@@ -22,7 +22,17 @@ import {
   type SafeProviderInfo,
   type SecurityMode,
 } from '@/lib/keys';
-import { getAutoContinueEnabled, setAutoContinueEnabled } from '@/lib/db';
+import {
+  getAutoContinueEnabled,
+  setAutoContinueEnabled,
+  getDesignQualitySetting,
+  setDesignQualitySetting,
+  getReviewDesignBeforeBuild,
+  setReviewDesignBeforeBuild,
+  getRunCriticAutomatically,
+  setRunCriticAutomatically,
+} from '@/lib/db';
+import type { DesignQuality } from '@/lib/design/types';
 import { ProviderCard } from '@/components/settings/provider-card';
 import { CustomProviderSection } from '@/components/settings/custom-provider-card';
 import { SecuritySection } from '@/components/settings/security-section';
@@ -38,6 +48,9 @@ export default function SettingsPage() {
   const [storageError, setStorageError] = useState<string | null>(null);
   const [showProtectionDetails, setShowProtectionDetails] = useState(false);
   const [autoContinueEnabled, setAutoContinueEnabledState] = useState(true);
+  const [designQuality, setDesignQualityState] = useState<DesignQuality>('standard');
+  const [reviewBeforeBuild, setReviewBeforeBuildState] = useState(true);
+  const [runCriticAuto, setRunCriticAutoState] = useState(false);
 
   const loadData = useCallback(() => {
     setIsLoading(true);
@@ -47,12 +60,18 @@ export default function SettingsPage() {
       getSecurityMode(),
       isSessionLocked(),
       getAutoContinueEnabled(),
+      getDesignQualitySetting(),
+      getReviewDesignBeforeBuild(),
+      getRunCriticAutomatically(),
     ])
-      .then(([allProviders, mode, locked, autoContinue]) => {
+      .then(([allProviders, mode, locked, autoContinue, quality, review, critic]) => {
         setProviders(allProviders);
         setSecurityMode(mode);
         setIsLocked(locked);
         setAutoContinueEnabledState(autoContinue);
+        setDesignQualityState(quality);
+        setReviewBeforeBuildState(review);
+        setRunCriticAutoState(critic);
         if (locked) {
           setIsUnlockModalOpen(true);
         }
@@ -73,13 +92,19 @@ export default function SettingsPage() {
       getSecurityMode(),
       isSessionLocked(),
       getAutoContinueEnabled(),
+      getDesignQualitySetting(),
+      getReviewDesignBeforeBuild(),
+      getRunCriticAutomatically(),
     ])
-      .then(([allProviders, mode, locked, autoContinue]) => {
+      .then(([allProviders, mode, locked, autoContinue, quality, review, critic]) => {
         if (active) {
           setProviders(allProviders);
           setSecurityMode(mode);
           setIsLocked(locked);
           setAutoContinueEnabledState(autoContinue);
+          setDesignQualityState(quality);
+          setReviewBeforeBuildState(review);
+          setRunCriticAutoState(critic);
           if (locked) {
             setIsUnlockModalOpen(true);
           }
@@ -326,7 +351,7 @@ export default function SettingsPage() {
 
       {/* Section: Design Engine Preferences */}
       {!isLoading && (
-        <Card className="p-6 space-y-4">
+        <Card className="p-6 space-y-6">
           <div className="flex items-center gap-2">
             <Palette className="w-4 h-4 text-[var(--accent)]" />
             <div>
@@ -334,12 +359,160 @@ export default function SettingsPage() {
                 Design Engine System
               </h3>
               <p className="text-xs text-[var(--muted)] mt-0.5">
-                DESYRA automatically generates deterministic CSS tokens, base reset, and premium component primitives for every project.
+                Configure AI design brief analysis, plan reviews, and automated design critique.
               </p>
             </div>
           </div>
 
-          <div className="pt-3 border-t border-[var(--border)] space-y-3 text-xs text-[var(--muted)]">
+          {/* Design quality tier selection */}
+          <div className="pt-4 border-t border-[var(--border)] space-y-3">
+            <div>
+              <span className="text-xs sm:text-sm font-medium text-[var(--text)]">Design Quality</span>
+              <p className="text-xs text-[var(--muted)] mt-0.5">
+                Controls the depth of design analysis and AI verification for every new app.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <button
+                type="button"
+                onClick={async () => {
+                  setDesignQualityState('fast');
+                  await setDesignQualitySetting('fast');
+                }}
+                className={`p-3.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                  designQuality === 'fast'
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--text)]'
+                    : 'border-[var(--border)] hover:border-[var(--muted)] bg-[var(--surface)] text-[var(--muted)]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[var(--text)]">Fast</span>
+                    {designQuality === 'fast' && <Badge variant="accent" size="sm">Active</Badge>}
+                  </div>
+                  <p className="text-[11px] mt-1 text-[var(--muted)]">
+                    No AI brief analysis. Instant deterministic design archetype selection.
+                  </p>
+                </div>
+                <p className="text-[10px] mt-2 text-[var(--disabled)] font-mono">
+                  0 extra tokens • Fastest build
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  setDesignQualityState('standard');
+                  await setDesignQualitySetting('standard');
+                }}
+                className={`p-3.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                  designQuality === 'standard'
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--text)]'
+                    : 'border-[var(--border)] hover:border-[var(--muted)] bg-[var(--surface)] text-[var(--muted)]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[var(--text)]">Standard</span>
+                    {designQuality === 'standard' && <Badge variant="accent" size="sm">Default</Badge>}
+                  </div>
+                  <p className="text-[11px] mt-1 text-[var(--muted)]">
+                    AI idea brief + interactive Plan Card with style tile before coding.
+                  </p>
+                </div>
+                <p className="text-[10px] mt-2 text-[var(--disabled)] font-mono">
+                  ~1 small AI call (~1.5k tokens)
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  setDesignQualityState('best');
+                  await setDesignQualitySetting('best');
+                  setRunCriticAutoState(true);
+                  await setRunCriticAutomatically(true);
+                }}
+                className={`p-3.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                  designQuality === 'best'
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--text)]'
+                    : 'border-[var(--border)] hover:border-[var(--muted)] bg-[var(--surface)] text-[var(--muted)]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[var(--text)]">Best</span>
+                    {designQuality === 'best' && <Badge variant="accent" size="sm">Active</Badge>}
+                  </div>
+                  <p className="text-[11px] mt-1 text-[var(--muted)]">
+                    Standard + automatic AI design critic review after the first build.
+                  </p>
+                </div>
+                <p className="text-[10px] mt-2 text-[var(--disabled)] font-mono">
+                  Brief + ~1 larger critic call reading project files
+                </p>
+              </button>
+            </div>
+          </div>
+
+          {/* Toggle: Review design before building */}
+          <div className="flex items-start justify-between gap-4 pt-4 border-t border-[var(--border)]">
+            <div className="space-y-1">
+              <label
+                htmlFor="review-design-toggle"
+                className="text-xs sm:text-sm font-medium text-[var(--text)] cursor-pointer select-none"
+              >
+                Review the design before building
+              </label>
+              <p className="text-xs text-[var(--muted)] leading-relaxed">
+                When enabled (default), DESYRA presents an interactive Plan Card to preview style tiles and customize palettes before generating code. When disabled, the recommended design builds immediately.
+              </p>
+            </div>
+            <div className="pt-0.5 shrink-0">
+              <input
+                id="review-design-toggle"
+                type="checkbox"
+                checked={reviewBeforeBuild}
+                onChange={async (e) => {
+                  const val = e.target.checked;
+                  setReviewBeforeBuildState(val);
+                  await setReviewDesignBeforeBuild(val);
+                }}
+                className="w-4 h-4 rounded border-[var(--border)] text-[var(--accent)] accent-[var(--accent)] focus:ring-[var(--accent)] cursor-pointer"
+              />
+            </div>
+          </div>
+
+          {/* Toggle: Run AI design critic automatically */}
+          <div className="flex items-start justify-between gap-4 pt-4 border-t border-[var(--border)]">
+            <div className="space-y-1">
+              <label
+                htmlFor="run-critic-toggle"
+                className="text-xs sm:text-sm font-medium text-[var(--text)] cursor-pointer select-none"
+              >
+                Run AI design critic automatically
+              </label>
+              <p className="text-xs text-[var(--muted)] leading-relaxed">
+                Automatically analyzes generated code against the 8 DESYRA design principles after the first successful build and surfaces actionable fixes. Default ON only for Best quality.
+              </p>
+            </div>
+            <div className="pt-0.5 shrink-0">
+              <input
+                id="run-critic-toggle"
+                type="checkbox"
+                checked={runCriticAuto}
+                onChange={async (e) => {
+                  const val = e.target.checked;
+                  setRunCriticAutoState(val);
+                  await setRunCriticAutomatically(val);
+                }}
+                className="w-4 h-4 rounded border-[var(--border)] text-[var(--accent)] accent-[var(--accent)] focus:ring-[var(--accent)] cursor-pointer"
+              />
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-[var(--border)] space-y-3 text-xs text-[var(--muted)]">
             <div className="flex items-center justify-between">
               <div>
                 <span className="font-medium text-[var(--text)]">Managed CSS files</span>

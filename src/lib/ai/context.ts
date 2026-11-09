@@ -3,7 +3,7 @@ import type { ChatMessage } from './types';
 import { BUILD_SYSTEM_PROMPT } from './prompts/build';
 import { buildDesignSystemPrompt } from './prompts/designBuild';
 import { MANAGED_DESIGN_FILES } from '@/lib/design/install';
-import type { DesignSpec } from '@/lib/design/types';
+import type { DesignSpec, ProjectPlan } from '@/lib/design/types';
 import { parseProtocol } from './fileProtocol';
 
 export const FILE_CONTENT_CHAR_BUDGET = 60000;
@@ -13,6 +13,7 @@ export interface BuildContextParams {
   conversationHistory: StoredMessage[];
   openFilePath?: string | null;
   projectDesign?: DesignSpec | null;
+  projectPlan?: ProjectPlan | null;
 }
 
 /**
@@ -188,9 +189,13 @@ export function buildAiChatContext({
   conversationHistory,
   openFilePath,
   projectDesign,
+  projectPlan,
 }: BuildContextParams): ChatMessage[] {
-  const touchedInLast = getFilesTouchedInLastAssistantMessage(conversationHistory);
-  const incompletePaths = getIncompleteFilesInLastAssistantMessage(conversationHistory);
+  // Filter out non-chat messages (e.g. interactive Plan Cards) from LLM context
+  const chatHistory = conversationHistory.filter((msg) => msg.kind !== 'plan_card');
+
+  const touchedInLast = getFilesTouchedInLastAssistantMessage(chatHistory);
+  const incompletePaths = getIncompleteFilesInLastAssistantMessage(chatHistory);
   const projectFilesContent = buildProjectFilesMessage(
     projectFiles,
     touchedInLast,
@@ -200,11 +205,11 @@ export function buildAiChatContext({
 
   // System prompt selection
   const systemPrompt = projectDesign
-    ? buildDesignSystemPrompt(projectDesign)
+    ? buildDesignSystemPrompt(projectDesign, projectPlan)
     : BUILD_SYSTEM_PROMPT;
 
   // Take the last 20 conversation messages
-  const recentHistory = conversationHistory.slice(-20);
+  const recentHistory = chatHistory.slice(-20);
 
   const compactedMessages: ChatMessage[] = recentHistory.map((msg) => {
     if (msg.role === 'assistant') {

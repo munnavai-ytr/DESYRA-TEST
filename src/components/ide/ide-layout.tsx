@@ -663,6 +663,12 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
         isOpen={isDesignPanelOpen}
         onClose={() => setIsDesignPanelOpen(false)}
         onFixWithAi={handleFixWithAi}
+        activeProvider={activeProvider}
+        activeModel={activeModel}
+        onReopenPlan={() => {
+          setIsDesignPanelOpen(false);
+          setMobileTab('chat');
+        }}
       />
     </div>
   );

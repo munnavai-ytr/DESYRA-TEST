@@ -5,6 +5,8 @@ import {
   resolveRelativePath,
   detectUnsupportedStack,
   PREVIEW_CSP,
+  rewriteModuleSpecifiers,
+  PreviewWarning,
 } from './buildPreview';
 import { escapeScriptJson } from './runtime';
 import { applySearchReplaceToContent } from '../ai/applyChanges';
@@ -518,5 +520,46 @@ btn.addEventListener('click', () => {
 
     const scriptFirstLine = lines[scriptEntry!.startLine - 1];
     expect(scriptFirstLine).toBe('const a = 1;');
+  });
+});
+
+describe('0.1 rewriteModuleSpecifiers: masking, non-import strings & missing file warnings', () => {
+  const existingFiles = [
+    { path: 'js/main.js', content: '' },
+    { path: 'js/ui.js', content: 'export const render = () => {};' },
+    { path: 'js/setup.js', content: 'console.log("setup");' },
+  ];
+
+  it('keeps import text inside normal strings unchanged while rewriting real import next to it', () => {
+    const warnings: PreviewWarning[] = [];
+    const code = `
+const exampleSnippet = "import { x } from './ui.js'";
+import { render } from './ui.js';
+const anotherString = 'export * from "./ui.js"';
+`;
+    const res = rewriteModuleSpecifiers(code, 'js/main.js', existingFiles, warnings);
+    expect(res).toContain('const exampleSnippet = "import { x } from \'./ui.js\'";');
+    expect(res).toContain("import { render } from '@desyra/js/ui.js';");
+    expect(res).toContain('const anotherString = \'export * from "./ui.js"\';');
+    expect(warnings.length).toBe(0);
+  });
+
+  it('keeps template literals containing import-like code untouched', () => {
+    const warnings: PreviewWarning[] = [];
+    const code = 'const doc = `import(\'./a.js\') inside template`;\nimport "./setup.js";';
+    const res = rewriteModuleSpecifiers(code, 'js/main.js', existingFiles, warnings);
+    expect(res).toContain("const doc = `import('./a.js') inside template`;");
+    expect(res).toContain('import "@desyra/js/setup.js";');
+    expect(warnings.length).toBe(0);
+  });
+
+  it('leaves specifier unchanged and produces clear warning when target file is missing', () => {
+    const warnings: PreviewWarning[] = [];
+    const code = `import { missingThing } from './missing.js';`;
+    const res = rewriteModuleSpecifiers(code, 'js/main.js', existingFiles, warnings);
+    expect(res).toContain(`import { missingThing } from './missing.js';`);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0].type).toBe('missing_file');
+    expect(warnings[0].message).toBe("js/main.js imports './missing.js' but the file does not exist");
   });
 });

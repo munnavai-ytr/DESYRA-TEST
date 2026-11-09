@@ -146,5 +146,25 @@ Let me know what you think!`;
       expect(legacyCtx[0].content).toBe(BUILD_SYSTEM_PROMPT);
       expect(legacyCtx[0].content).not.toContain('ACTIVE DESIGN SYSTEM');
     });
+
+    it('(4) filters out plan_card messages so interactive cards are never sent to provider', () => {
+      const messages: StoredMessage[] = [
+        { id: 'u1', projectId: 'p1', role: 'user', content: 'Build a store', createdAt: 100 },
+        { id: 'p1', projectId: 'p1', role: 'assistant', content: '{"status":"approved"}', kind: 'plan_card', createdAt: 150 },
+        { id: 'a1', projectId: 'p1', role: 'assistant', content: 'Here is your store', createdAt: 200 },
+      ];
+
+      const ctx = buildAiChatContext({
+        projectFiles: [],
+        conversationHistory: messages,
+      });
+
+      // The returned ChatMessages array must NOT contain the plan_card message
+      const contents = ctx.map((m) => m.content);
+      expect(contents).toContain('Build a store');
+      expect(contents).toContain('Here is your store');
+      expect(contents).not.toContain('{"status":"approved"}');
+    });
   });
 });
+

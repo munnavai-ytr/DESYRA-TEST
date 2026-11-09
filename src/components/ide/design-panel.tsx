@@ -12,22 +12,37 @@ import {
   RefreshCw,
   Eye,
   X,
+  FileCode,
+  CheckCircle2,
+  ExternalLink,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/ui/icon-button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/toast';
-import type { DesignSpec, DesignMode, DesignRadius, DesignDensity, DesignMotion, DesignLanguage, LintResult } from '@/lib/design/types';
+import type {
+  DesignSpec,
+  DesignMode,
+  DesignRadius,
+  DesignDensity,
+  DesignMotion,
+  DesignLanguage,
+  LintResult,
+  ProjectCritique,
+  ProjectPlan,
+} from '@/lib/design/types';
 import { STYLE_PRESETS } from '@/lib/design/presets';
 import { ARCHETYPES } from '@/lib/design/archetypes';
 import { FONT_PAIRS } from '@/lib/design/fonts';
-import { installDesignSystem, checkManagedFilesHashes } from '@/lib/design/install';
+import { installDesignSystem } from '@/lib/design/install';
 import { contrastRatio } from '@/lib/design/color';
 import { lintDesign } from '@/lib/design/lint';
 import { listFiles } from '@/lib/files';
-import type { ProjectFile } from '@/lib/db';
+import { getProject, type ProjectFile } from '@/lib/db';
+import type { SafeProviderInfo } from '@/lib/keys';
+import { StyleTile } from '@/components/chat/style-tile';
+import { runDesignCritic } from '@/lib/design/critic';
 
 export interface DesignPanelProps {
   projectId: string;
@@ -36,6 +51,9 @@ export interface DesignPanelProps {
   onClose: () => void;
   onFixWithAi?: (fixPrompt: string) => void;
   isStreaming?: boolean;
+  activeProvider?: SafeProviderInfo | null;
+  activeModel?: string | null;
+  onReopenPlan?: () => void;
 }
 
 export function DesignPanel({
@@ -45,6 +63,9 @@ export function DesignPanel({
   onClose,
   onFixWithAi,
   isStreaming = false,
+  activeProvider,
+  activeModel,
+  onReopenPlan,
 }: DesignPanelProps) {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<'theme' | 'review'>('theme');
@@ -53,48 +74,73 @@ export function DesignPanel({
   const [spec, setSpec] = useState<DesignSpec | null>(projectDesign ?? null);
   const [prevProjectDesign, setPrevProjectDesign] = useState<DesignSpec | null>(projectDesign ?? null);
 
-  // Derived state sync
+  // Sync spec with props
   if (projectDesign && projectDesign !== prevProjectDesign) {
     setPrevProjectDesign(projectDesign);
     setSpec(projectDesign);
   }
 
-  // Linting state
+  // Loaded project metadata & files
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [lintResult, setLintResult] = useState<LintResult | null>(null);
+  const [critique, setCritique] = useState<ProjectCritique | null>(null);
+  const [plan, setPlan] = useState<ProjectPlan | null>(null);
+  const [isRunningCritic, setIsRunningCritic] = useState(false);
 
-  // Load project files and run linter
-  const runLinter = useCallback(async () => {
+  // Load project files, linter, and critique
+  const loadData = useCallback(async () => {
     try {
-      const currentFiles = await listFiles(projectId);
+      const [currentFiles, proj] = await Promise.all([
+        listFiles(projectId),
+        getProject(projectId),
+      ]);
       setFiles(currentFiles);
+      if (proj?.critique) {
+        setCritique(proj.critique);
+      }
+      if (proj?.plan) {
+        setPlan(proj.plan);
+      }
       if (currentFiles.length > 0) {
         const res = lintDesign(currentFiles, spec ?? undefined);
         setLintResult(res);
       }
     } catch (err) {
-      console.error('Failed to run design linter:', err);
+      console.error('Failed to load design panel data:', err);
     }
   }, [projectId, spec]);
 
   useEffect(() => {
     if (!isOpen) return;
-    let isMounted = true;
-    listFiles(projectId).then((currentFiles) => {
-      if (!isMounted) return;
-      setFiles(currentFiles);
-      if (currentFiles.length > 0) {
-        const res = lintDesign(currentFiles, spec ?? undefined);
-        setLintResult(res);
+    let isCancelled = false;
+    void (async () => {
+      try {
+        const [currentFiles, proj] = await Promise.all([
+          listFiles(projectId),
+          getProject(projectId),
+        ]);
+        if (isCancelled) return;
+        setFiles(currentFiles);
+        if (proj?.critique) {
+          setCritique(proj.critique);
+        }
+        if (proj?.plan) {
+          setPlan(proj.plan);
+        }
+        if (currentFiles.length > 0) {
+          const res = lintDesign(currentFiles, spec ?? undefined);
+          setLintResult(res);
+        }
+      } catch (err) {
+        console.error('Failed to load design panel data:', err);
       }
-    }).catch(console.error);
-
+    })();
     return () => {
-      isMounted = false;
+      isCancelled = true;
     };
   }, [isOpen, projectId, spec]);
 
-  // Apply changes debounced
+  // Apply design changes
   const applyDesignChanges = useCallback(
     async (newSpec: DesignSpec) => {
       try {
@@ -104,7 +150,7 @@ export function DesignPanel({
           title: 'Design System Updated',
           message: 'Re-themed preview files in IndexedDB.',
         });
-        runLinter();
+        loadData();
       } catch (err) {
         console.error('Failed to update design system:', err);
         toast({
@@ -114,7 +160,7 @@ export function DesignPanel({
         });
       }
     },
-    [projectId, toast, runLinter]
+    [projectId, toast, loadData]
   );
 
   const updateSpecField = <K extends keyof DesignSpec>(field: K, value: DesignSpec[K]) => {
@@ -134,10 +180,6 @@ export function DesignPanel({
     updateSpecField('seedHex', randomSeed);
   };
 
-  const currentArchetype = useMemo(() => {
-    return ARCHETYPES[spec?.archetypeId || 'general'] || ARCHETYPES['general'];
-  }, [spec?.archetypeId]);
-
   // WCAG contrast checks
   const contrastChecks = useMemo(() => {
     if (!spec || !spec.tokens?.palette) return null;
@@ -155,6 +197,61 @@ export function DesignPanel({
     ];
   }, [spec]);
 
+  // Run AI Critic on demand
+  const handleRunCriticOnDemand = async () => {
+    if (!spec || !activeProvider || !activeModel || isRunningCritic) return;
+    setIsRunningCritic(true);
+    try {
+      const res = await runDesignCritic({
+        projectId,
+        files,
+        spec,
+        brief: plan?.brief,
+        lintResult,
+        provider: activeProvider,
+        model: activeModel,
+      });
+      setCritique(res);
+      toast({
+        type: 'success',
+        title: 'Critic Completed',
+        message: `Design evaluated with overall score ${res.score}/100.`,
+      });
+    } catch (err) {
+      console.error('Failed to run AI design critic:', err);
+      toast({
+        type: 'error',
+        title: 'Critic Failed',
+        message: 'Could not run AI critique.',
+      });
+    } finally {
+      setIsRunningCritic(false);
+    }
+  };
+
+  // Apply top fixes from critique
+  const handleApplyTopCriticFixes = () => {
+    if (!critique || critique.issues.length === 0 || !onFixWithAi) return;
+
+    const topIssues = critique.issues.slice(0, 6);
+    const issuesText = topIssues
+      .map(
+        (iss, idx) =>
+          `Issue ${idx + 1}: [${iss.severity.toUpperCase()}] ${iss.title}\n` +
+          `File: ${iss.codeEvidence?.file || 'index.html'}${iss.codeEvidence?.line ? ` (line ${iss.codeEvidence.line})` : ''}\n` +
+          `Evidence:\n${iss.codeEvidence?.snippet || ''}\n` +
+          `Problem: ${iss.description}\n` +
+          `Fix: ${iss.fixSuggestion}`
+      )
+      .join('\n\n');
+
+    const prompt = `Please fix the following AI Design Critic issues in our code:\n\n${issuesText}\n\nIMPORTANT RULES:\n- Use minimal <desyra-edit> blocks to patch the specific lines.\n- Use component classes from css/components.css and CSS variables (e.g. var(--color-primary), var(--radius-md)) instead of hardcoded hex or custom utilities.\n- DO NOT edit css/tokens.css, css/base.css, or css/components.css (they are managed by the Design Engine).`;
+
+    onFixWithAi(prompt);
+    onClose();
+  };
+
+  // Fix 7A linter issues with AI
   const handleFixIssuesWithAi = () => {
     if (!lintResult || lintResult.issues.length === 0 || !onFixWithAi) return;
 
@@ -166,7 +263,7 @@ export function DesignPanel({
       )
       .join('\n');
 
-    const prompt = `Please fix the following design system & accessibility issues in our project code:\n\n${issueLines}\n\nIMPORTANT: Use <desyra-edit> for localized edits. Use component classes from css/components.css and CSS variables (var(--color-primary), var(--font-body), etc.) instead of hardcoded inline styles. NEVER edit css/tokens.css, css/base.css, or css/components.css.`;
+    const prompt = `Please fix the following design system & accessibility issues in our project code:\n\n${issueLines}\n\nIMPORTANT: Use <desyra-edit> for localized edits. Use component classes from css/components.css and CSS variables instead of hardcoded inline styles. NEVER edit css/tokens.css, css/base.css, or css/components.css.`;
 
     onFixWithAi(prompt);
     onClose();
@@ -175,21 +272,44 @@ export function DesignPanel({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[420px] bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl flex flex-col animate-in slide-in-from-right duration-200 text-xs">
+    <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[440px] bg-[var(--surface)] border-l border-[var(--border)] shadow-2xl flex flex-col animate-in slide-in-from-right duration-200 text-xs">
       {/* Header */}
       <div className="h-12 px-4 border-b border-[var(--border)] flex items-center justify-between shrink-0 bg-[var(--bg)]">
-        <div className="flex items-center gap-2">
-          <Palette className="w-4 h-4 text-[var(--accent)]" />
-          <span className="font-semibold text-sm text-[var(--text)]">Design Engine</span>
-          {lintResult && (
-            <Badge variant={lintResult.score >= 80 ? 'accent' : 'warning'} className="text-[10px] px-1.5 py-0">
-              Score: {lintResult.score}/100
+        <div className="flex items-center gap-2 min-w-0">
+          <Palette className="w-4 h-4 text-[var(--accent)] shrink-0" />
+          <span className="font-semibold text-sm text-[var(--text)] truncate">
+            {plan?.brief ? plan.brief.directionName : 'Design Engine'}
+          </span>
+          {critique ? (
+            <Badge variant={critique.score >= 80 ? 'accent' : 'warning'} className="text-[10px] px-1.5 py-0 shrink-0">
+              Critic: {critique.score}/100
             </Badge>
-          )}
+          ) : lintResult ? (
+            <Badge variant={lintResult.score >= 80 ? 'accent' : 'warning'} className="text-[10px] px-1.5 py-0 shrink-0">
+              Linter: {lintResult.score}/100
+            </Badge>
+          ) : null}
         </div>
-        <IconButton size="sm" variant="ghost" aria-label="Close Design panel" onClick={onClose}>
-          <X className="w-4 h-4" />
-        </IconButton>
+
+        <div className="flex items-center gap-1 shrink-0">
+          {plan && onReopenPlan && (
+            <button
+              type="button"
+              onClick={() => {
+                onReopenPlan();
+                onClose();
+              }}
+              className="px-2 py-1 rounded bg-[var(--elevated)] hover:bg-[var(--border)] text-[var(--muted)] hover:text-[var(--text)] text-[10px] flex items-center gap-1 cursor-pointer"
+              title="Re-open interactive Plan Card in chat"
+            >
+              <span>Re-open plan</span>
+              <ExternalLink className="w-3 h-3" />
+            </button>
+          )}
+          <IconButton size="sm" variant="ghost" aria-label="Close Design panel" onClick={onClose}>
+            <X className="w-4 h-4" />
+          </IconButton>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -209,7 +329,7 @@ export function DesignPanel({
           type="button"
           onClick={() => {
             setActiveTab('review');
-            runLinter();
+            loadData();
           }}
           className={`flex-1 py-2.5 font-medium text-xs border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
             activeTab === 'review'
@@ -217,7 +337,7 @@ export function DesignPanel({
               : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'
           }`}
         >
-          <span>Review Linter</span>
+          <span>Review &amp; Critique</span>
           {lintResult && lintResult.issues.length > 0 && (
             <span className="w-4 h-4 rounded-full bg-[var(--warning)] text-black text-[10px] font-bold flex items-center justify-center">
               {lintResult.issues.length}
@@ -227,10 +347,18 @@ export function DesignPanel({
       </div>
 
       {/* Panel Body */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-6 [scrollbar-width:thin]">
+      <div className="flex-1 overflow-y-auto p-4 space-y-5 [scrollbar-width:thin]">
         {activeTab === 'theme' ? (
           spec ? (
             <>
+              {/* Style Tile Preview */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                  Live Style Tile Preview
+                </label>
+                <StyleTile spec={spec} height={190} />
+              </div>
+
               {/* Preset Selector */}
               <div className="space-y-2">
                 <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
@@ -244,61 +372,50 @@ export function DesignPanel({
                         key={p.id}
                         type="button"
                         onClick={() => updateSpecField('presetId', p.id)}
-                        className={`p-2.5 rounded-[var(--radius-sm)] border text-left transition-all ${
+                        className={`p-2.5 rounded-[var(--radius-sm)] border text-left transition-all cursor-pointer ${
                           isSelected
                             ? 'border-[var(--accent)] bg-[var(--elevated)] shadow-sm'
                             : 'border-[var(--border)] hover:border-[var(--muted)] bg-[var(--surface)]'
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-semibold text-xs text-[var(--text)]">{p.name}</span>
-                          {isSelected && <Check className="w-3.5 h-3.5 text-[var(--accent)]" />}
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-[11px] text-[var(--text)] truncate">
+                            {p.name}
+                          </span>
+                          {isSelected && <Check className="w-3 h-3 text-[var(--accent)] shrink-0" />}
                         </div>
-                        <p className="text-[10px] text-[var(--muted)] line-clamp-2 leading-tight">{p.personality}</p>
+                        <p className="text-[10px] text-[var(--muted)] line-clamp-1 mt-0.5">
+                          {p.personality}
+                        </p>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Color Seed */}
+              {/* Seed Color & Surprise Me */}
               <div className="space-y-2 pt-2 border-t border-[var(--border)]">
                 <div className="flex items-center justify-between">
                   <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-                    Color Seed
+                    Primary Brand Color
                   </label>
-                  <Button variant="ghost" size="sm" onClick={handleSurpriseMe} leftIcon={<Sparkles className="w-3 h-3 text-[var(--accent)]" />} className="h-6 text-[10px] px-1.5">
-                    Surprise me
-                  </Button>
+                  <button
+                    type="button"
+                    onClick={handleSurpriseMe}
+                    className="flex items-center gap-1 text-[11px] text-[var(--accent)] hover:underline cursor-pointer"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>Surprise Me</span>
+                  </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  {currentArchetype.seedColors.map((sc) => (
-                    <button
-                      key={sc.hex}
-                      type="button"
-                      onClick={() => updateSpecField('seedHex', sc.hex)}
-                      title={sc.name}
-                      style={{ backgroundColor: sc.hex }}
-                      className={`w-7 h-7 rounded-full border-2 transition-transform ${
-                        spec.seedHex.toLowerCase() === sc.hex.toLowerCase()
-                          ? 'border-white scale-110 shadow-md'
-                          : 'border-transparent hover:scale-105'
-                      }`}
-                    />
-                  ))}
-                  <div className="flex items-center gap-1.5 ml-auto">
-                    <input
-                      type="color"
-                      value={spec.seedHex}
-                      onChange={(e) => updateSpecField('seedHex', e.target.value)}
-                      className="w-7 h-7 rounded border border-[var(--border)] bg-transparent cursor-pointer"
-                    />
-                    <Input
-                      value={spec.seedHex}
-                      onChange={(e) => updateSpecField('seedHex', e.target.value)}
-                      className="w-20 font-mono text-[11px] h-7 min-h-[28px]"
-                    />
-                  </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="color"
+                    value={spec.seedHex}
+                    onChange={(e) => updateSpecField('seedHex', e.target.value)}
+                    className="w-8 h-8 rounded-[var(--radius-sm)] cursor-pointer bg-transparent border border-[var(--border)] p-0"
+                  />
+                  <span className="font-mono text-xs text-[var(--text)]">{spec.seedHex.toUpperCase()}</span>
                 </div>
               </div>
 
@@ -312,7 +429,7 @@ export function DesignPanel({
                         key={m}
                         type="button"
                         onClick={() => updateSpecField('mode', m)}
-                        className={`flex-1 py-1 text-[11px] capitalize rounded-[3px] transition-colors ${
+                        className={`flex-1 py-1 text-[11px] capitalize rounded-[3px] transition-colors cursor-pointer ${
                           spec.mode === m ? 'bg-[var(--surface)] font-semibold text-[var(--text)]' : 'text-[var(--muted)]'
                         }`}
                       >
@@ -330,11 +447,50 @@ export function DesignPanel({
                         key={r}
                         type="button"
                         onClick={() => updateSpecField('radius', r)}
-                        className={`flex-1 py-1 text-[11px] capitalize rounded-[3px] transition-colors ${
+                        className={`flex-1 py-1 text-[11px] capitalize rounded-[3px] transition-colors cursor-pointer ${
                           spec.radius === r ? 'bg-[var(--surface)] font-semibold text-[var(--text)]' : 'text-[var(--muted)]'
                         }`}
                       >
                         {r}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Density & Motion */}
+              <div className="grid grid-cols-2 gap-3 pt-2 border-t border-[var(--border)]">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">Density</label>
+                  <div className="flex p-0.5 bg-[var(--elevated)] rounded-[var(--radius-sm)] border border-[var(--border)]">
+                    {(['compact', 'comfortable', 'spacious'] as DesignDensity[]).map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => updateSpecField('density', d)}
+                        className={`flex-1 py-1 text-[11px] capitalize rounded-[3px] transition-colors cursor-pointer ${
+                          spec.density === d ? 'bg-[var(--surface)] font-semibold text-[var(--text)]' : 'text-[var(--muted)]'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">Motion</label>
+                  <div className="flex p-0.5 bg-[var(--elevated)] rounded-[var(--radius-sm)] border border-[var(--border)]">
+                    {(['none', 'subtle', 'rich'] as DesignMotion[]).map((mo) => (
+                      <button
+                        key={mo}
+                        type="button"
+                        onClick={() => updateSpecField('motion', mo)}
+                        className={`flex-1 py-1 text-[11px] capitalize rounded-[3px] transition-colors cursor-pointer ${
+                          spec.motion === mo ? 'bg-[var(--surface)] font-semibold text-[var(--text)]' : 'text-[var(--muted)]'
+                        }`}
+                      >
+                        {mo}
                       </button>
                     ))}
                   </div>
@@ -349,7 +505,7 @@ export function DesignPanel({
                 <select
                   value={spec.fontPairId}
                   onChange={(e) => updateSpecField('fontPairId', e.target.value)}
-                  className="w-full h-8 px-2 bg-[var(--elevated)] border border-[var(--border)] rounded-[var(--radius-sm)] text-xs text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
+                  className="w-full h-8 px-2 bg-[var(--elevated)] border border-[var(--border)] rounded-[var(--radius-sm)] text-xs text-[var(--text)] focus:outline-hidden focus:border-[var(--accent)]"
                 >
                   {Object.values(FONT_PAIRS).map((fp) => (
                     <option key={fp.id} value={fp.id}>
@@ -369,7 +525,7 @@ export function DesignPanel({
                     {contrastChecks.map((cc, i) => (
                       <div key={i} className="flex items-center justify-between text-[11px]">
                         <span className="text-[var(--muted)] truncate pr-1">{cc.label}</span>
-                        <span className={`font-mono font-semibold shrink-0 ${cc.pass ? 'text-[var(--color-success)]' : 'text-[var(--color-error)]'}`}>
+                        <span className={`font-mono font-semibold shrink-0 ${cc.pass ? 'text-emerald-400' : 'text-amber-400'}`}>
                           {cc.ratio}:1 {cc.pass ? '✓' : '×'}
                         </span>
                       </div>
@@ -381,135 +537,192 @@ export function DesignPanel({
           ) : (
             <div className="text-center py-8 space-y-3">
               <p className="text-xs text-[var(--muted)]">This project does not have an installed Design System yet.</p>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={async () => {
-                  const currentFiles = await listFiles(projectId);
-                  const firstIdea = currentFiles.length > 0 ? currentFiles[0].content.slice(0, 100) : 'General App';
-                  const newSpec = {
-                    archetypeId: 'general',
-                    presetId: 'minimal',
-                    seedHex: '#ff6b1a',
-                    mode: 'both' as DesignMode,
-                    defaultMode: 'dark' as const,
-                    radius: 'soft' as DesignRadius,
-                    density: 'comfortable' as DesignDensity,
-                    fontPairId: 'inter-neutral',
-                    language: 'en' as DesignLanguage,
-                    motion: 'subtle' as DesignMotion,
-                    tokens: {} as any,
-                    createdAt: Date.now(),
-                  };
-                  await installDesignSystem(projectId, newSpec, { overwrite: true });
-                  setSpec(newSpec);
-                  toast({
-                    type: 'success',
-                    title: 'Design System Added',
-                    message: 'Installed css/tokens.css, base.css, components.css.',
-                  });
-                }}
-              >
-                Add Design System
-              </Button>
             </div>
           )
         ) : (
-          /* Tab 2: Review Linter */
-          <div className="space-y-4">
-            {lintResult ? (
-              <>
-                {/* Score Header Card */}
-                <Card className="p-4 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-[var(--text)]">Design Health Score</h3>
-                    <p className="text-[11px] text-[var(--muted)] mt-0.5">
-                      {lintResult.issues.length} issue(s) detected across project files
-                    </p>
-                  </div>
-                  <div className="w-14 h-14 rounded-full border-4 border-[var(--accent)] flex items-center justify-center font-bold text-lg text-[var(--text)]">
-                    {lintResult.score}
-                  </div>
-                </Card>
-
-                {/* Category Breakdown */}
-                <div className="space-y-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-                    Categories
-                  </span>
-                  <div className="space-y-1.5 p-3 rounded-[var(--radius-sm)] bg-[var(--elevated)] border border-[var(--border)] text-xs">
-                    {Object.entries(lintResult.categories).map(([cat, val]) => (
-                      <div key={cat} className="space-y-0.5">
-                        <div className="flex justify-between text-[11px]">
-                          <span className="capitalize text-[var(--muted)]">{cat}</span>
-                          <span className="font-mono font-medium text-[var(--text)]">{val}/100</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-[var(--surface)] rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-[var(--accent)] transition-all"
-                            style={{ width: `${val}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+          /* Tab 2: Review Linter & AI Critique */
+          <div className="space-y-5">
+            {/* AI Design Critic Card */}
+            <Card className="p-4 space-y-3 border-[var(--border)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[var(--accent)]" />
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text)]">
+                    AI Design Critic
+                  </h3>
                 </div>
+                {critique && (
+                  <Badge variant={critique.score >= 80 ? 'accent' : 'warning'} className="text-[10px] px-1.5 py-0 font-bold">
+                    Score: {critique.score}/100
+                  </Badge>
+                )}
+              </div>
 
-                {/* Issues List */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-                      Issues List ({lintResult.issues.length})
+              {critique ? (
+                <div className="space-y-3 text-xs">
+                  <p className="text-[var(--text)] leading-relaxed italic bg-[var(--elevated)]/50 p-2.5 rounded border border-[var(--border)]">
+                    &quot;{critique.summary}&quot;
+                  </p>
+
+                  {/* 8-category Rubric Bar Chart */}
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                      8 Principles Rubric
                     </span>
-                  </div>
-
-                  {lintResult.issues.length === 0 ? (
-                    <div className="p-4 rounded-[var(--radius-sm)] bg-[var(--elevated)] text-center text-[var(--color-success)] text-xs font-semibold flex items-center justify-center gap-1.5">
-                      <ShieldCheck className="w-4 h-4" />
-                      <span>All design &amp; accessibility checks passed (100/100)!</span>
-                    </div>
-                  ) : (
-                    <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
-                      {lintResult.issues.map((iss) => (
-                        <div
-                          key={iss.id}
-                          className="p-2.5 rounded-[var(--radius-sm)] bg-[var(--elevated)] border border-[var(--border)] space-y-1"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-mono text-[10px] text-[var(--accent)] truncate max-w-[200px]">
-                              {iss.file}
-                            </span>
-                            <Badge
-                              variant={iss.severity === 'error' ? 'error' : iss.severity === 'warning' ? 'warning' : 'info'}
-                              className="text-[9px] px-1 py-0 uppercase"
-                            >
-                              {iss.severity}
-                            </Badge>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 p-2.5 rounded bg-[var(--elevated)] border border-[var(--border)]">
+                      {Object.entries(critique.rubric).map(([cat, val]) => (
+                        <div key={cat} className="space-y-0.5">
+                          <div className="flex justify-between text-[10px]">
+                            <span className="capitalize text-[var(--muted)]">{cat}</span>
+                            <span className="font-mono font-medium text-[var(--text)]">{val}/10</span>
                           </div>
-                          <p className="text-xs text-[var(--text)] font-medium leading-snug">{iss.message}</p>
-                          <p className="text-[11px] text-[var(--muted)] leading-tight italic">Fix: {iss.fix}</p>
+                          <div className="w-full h-1 bg-[var(--surface)] rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-[var(--accent)] transition-all"
+                              style={{ width: `${(val / 10) * 100}%` }}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
+                  </div>
+
+                  {/* Critique Issues with Code Evidence Quotes */}
+                  {critique.issues && critique.issues.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                        Critique Findings ({critique.issues.length})
+                      </span>
+                      <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
+                        {critique.issues.map((iss) => (
+                          <div
+                            key={iss.id}
+                            className="p-2.5 rounded bg-[var(--elevated)] border border-[var(--border)] space-y-1.5"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-[11px] text-[var(--text)] truncate pr-1">
+                                {iss.title}
+                              </span>
+                              <Badge
+                                variant={iss.severity === 'high' ? 'error' : iss.severity === 'med' ? 'warning' : 'info'}
+                                className="text-[9px] px-1 py-0 uppercase"
+                              >
+                                {iss.severity}
+                              </Badge>
+                            </div>
+                            <p className="text-[11px] text-[var(--muted)] leading-snug">
+                              {iss.description}
+                            </p>
+                            {iss.codeEvidence && iss.codeEvidence.snippet && (
+                              <div className="bg-[var(--surface)] p-2 rounded border border-[var(--border)] font-mono text-[10px] text-[var(--text)] whitespace-pre-wrap overflow-x-auto">
+                                <span className="text-[var(--disabled)] block text-[9px] mb-0.5">
+                                  Evidence ({iss.codeEvidence.file}):
+                                </span>
+                                {iss.codeEvidence.snippet}
+                              </div>
+                            )}
+                            <p className="text-[11px] text-[var(--accent)] italic">
+                              Fix: {iss.fixSuggestion}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action: Apply Top Fixes */}
+                  {critique.issues && critique.issues.length > 0 && onFixWithAi && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleApplyTopCriticFixes}
+                      disabled={isStreaming}
+                      leftIcon={<Play className="w-3.5 h-3.5 fill-current" />}
+                      className="w-full mt-2"
+                    >
+                      Apply top fixes with AI
+                    </Button>
                   )}
                 </div>
+              ) : (
+                <div className="text-center py-3 space-y-2">
+                  <p className="text-[11px] text-[var(--muted)]">
+                    No critique evaluated yet. Run the AI critic to review code against the 8 design principles.
+                  </p>
+                  <p className="text-[10px] text-[var(--disabled)] font-mono">
+                    Estimated tokens: ~3k input tokens
+                  </p>
+                </div>
+              )}
 
-                {/* Fix with AI Button */}
+              {/* Run Critic Button */}
+              <Button
+                variant={critique ? 'secondary' : 'primary'}
+                size="sm"
+                onClick={handleRunCriticOnDemand}
+                disabled={isRunningCritic || isStreaming || !activeProvider || !activeModel}
+                leftIcon={<RefreshCw className={`w-3.5 h-3.5 ${isRunningCritic ? 'animate-spin' : ''}`} />}
+                className="w-full"
+              >
+                {isRunningCritic ? 'Analyzing code...' : critique ? 'Re-run AI critic' : 'Run AI design critic'}
+              </Button>
+            </Card>
+
+            {/* Existing 7A Deterministic Linter */}
+            {lintResult && (
+              <div className="space-y-3 pt-2 border-t border-[var(--border)]">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--muted)]">
+                    Deterministic Linter
+                  </h3>
+                  <Badge variant={lintResult.score >= 80 ? 'accent' : 'warning'} className="text-[10px] px-1.5 py-0 font-bold">
+                    Score: {lintResult.score}/100
+                  </Badge>
+                </div>
+
+                {lintResult.issues.length === 0 ? (
+                  <div className="p-3 rounded bg-[var(--elevated)] text-center text-emerald-400 text-xs font-medium flex items-center justify-center gap-1.5 border border-emerald-500/20">
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>All accessibility &amp; contrast checks passed!</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
+                    {lintResult.issues.map((iss) => (
+                      <div
+                        key={iss.id}
+                        className="p-2.5 rounded bg-[var(--elevated)] border border-[var(--border)] space-y-1"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[10px] text-[var(--accent)] truncate max-w-[200px]">
+                            {iss.file}
+                          </span>
+                          <Badge
+                            variant={iss.severity === 'error' ? 'error' : iss.severity === 'warning' ? 'warning' : 'info'}
+                            className="text-[9px] px-1 py-0 uppercase"
+                          >
+                            {iss.severity}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-[var(--text)] font-medium leading-snug">{iss.message}</p>
+                        <p className="text-[11px] text-[var(--muted)] leading-tight italic">Fix: {iss.fix}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {lintResult.issues.length > 0 && onFixWithAi && (
                   <Button
-                    variant="primary"
-                    size="md"
+                    variant="secondary"
+                    size="sm"
                     onClick={handleFixIssuesWithAi}
                     disabled={isStreaming}
-                    leftIcon={<Play className="w-4 h-4 fill-current" />}
-                    className="w-full mt-2"
+                    leftIcon={<Play className="w-3.5 h-3.5 fill-current" />}
+                    className="w-full"
                   >
-                    Fix design issues with AI
+                    Fix linter issues with AI
                   </Button>
                 )}
-              </>
-            ) : (
-              <div className="text-center py-6 text-xs text-[var(--muted)]">Loading design linter...</div>
+              </div>
             )}
           </div>
         )}

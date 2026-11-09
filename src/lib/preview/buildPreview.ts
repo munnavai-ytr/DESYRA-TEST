@@ -299,9 +299,188 @@ export function fileToDataUri(path: string, content: string): string {
 }
 
 /**
+ * Masks comments, template literals, and non-import string literals in JavaScript code,
+ * leaving only static and dynamic import module specifiers unmasked so they can be rewritten.
+ * Respects escape characters and ${ ... } expression nesting inside template literals.
+ */
+export function maskNonImportLiteralsAndComments(code: string): {
+  maskedCode: string;
+  restore: (text: string) => string;
+} {
+  const masks: string[] = [];
+  let result = '';
+  const len = code.length;
+  let i = 0;
+
+  // Helper to get last non-whitespace word or token before index `start`
+  const getPrecedingToken = (start: number): string => {
+    let p = start - 1;
+    while (p >= 0 && /\s/.test(code[p])) {
+      p--;
+    }
+    if (p < 0) return '';
+    if (code[p] === '(') {
+      let b = p - 1;
+      while (b >= 0 && /\s/.test(code[b])) {
+        b--;
+      }
+      let wordStart = b;
+      while (wordStart >= 0 && /[a-zA-Z0-9_$]/.test(code[wordStart])) {
+        wordStart--;
+      }
+      const word = code.slice(wordStart + 1, b + 1);
+      if (word === 'import') {
+        return 'import(';
+      }
+      return '(';
+    }
+    const end = p;
+    while (p >= 0 && /[a-zA-Z0-9_$]/.test(code[p])) {
+      p--;
+    }
+    return code.slice(p + 1, end + 1);
+  };
+
+  while (i < len) {
+    const ch = code[i];
+    const next = i + 1 < len ? code[i + 1] : '';
+
+    // 1. Single-line comment: // ...
+    if (ch === '/' && next === '/') {
+      const start = i;
+      i += 2;
+      while (i < len && code[i] !== '\n') {
+        i++;
+      }
+      const comment = code.slice(start, i);
+      const token = `__DESYRA_MASK_${masks.length}__`;
+      masks.push(comment);
+      result += token;
+      continue;
+    }
+
+    // 2. Multi-line comment: /* ... */
+    if (ch === '/' && next === '*') {
+      const start = i;
+      i += 2;
+      while (i < len && !(code[i] === '*' && i + 1 < len && code[i + 1] === '/')) {
+        i++;
+      }
+      if (i < len) {
+        i += 2; // consume */
+      }
+      const comment = code.slice(start, i);
+      const token = `__DESYRA_MASK_${masks.length}__`;
+      masks.push(comment);
+      result += token;
+      continue;
+    }
+
+    // 3. Template literal: `...`
+    if (ch === '`') {
+      const start = i;
+      i++; // consume opening `
+      let exprDepth = 0;
+      while (i < len) {
+        if (code[i] === '\\') {
+          i += 2; // skip escape
+          continue;
+        }
+        if (exprDepth === 0 && code[i] === '`') {
+          i++; // consume closing `
+          break;
+        }
+        if (code[i] === '$' && i + 1 < len && code[i + 1] === '{') {
+          exprDepth++;
+          i += 2;
+          continue;
+        }
+        if (exprDepth > 0 && code[i] === '}') {
+          exprDepth--;
+          i++;
+          continue;
+        }
+        i++;
+      }
+      const tpl = code.slice(start, i);
+      const token = `__DESYRA_MASK_${masks.length}__`;
+      masks.push(tpl);
+      result += token;
+      continue;
+    }
+
+    // 4. String literal: '...' or "..."
+    if (ch === "'" || ch === '"') {
+      const prevToken = getPrecedingToken(i);
+      const isImportSpecifier =
+        prevToken === 'from' || prevToken === 'import' || prevToken === 'import(';
+
+      if (isImportSpecifier) {
+        // Keep import specifiers unmasked so regexes can rewrite them
+        const start = i;
+        const quote = ch;
+        i++; // consume opening quote
+        while (i < len) {
+          if (code[i] === '\\') {
+            i += 2;
+            continue;
+          }
+          if (code[i] === quote) {
+            i++; // consume closing quote
+            break;
+          }
+          i++;
+        }
+        result += code.slice(start, i);
+        continue;
+      }
+
+      // Non-import string literal -> mask it!
+      const start = i;
+      const quote = ch;
+      i++; // consume quote
+      while (i < len) {
+        if (code[i] === '\\') {
+          i += 2; // skip escape
+          continue;
+        }
+        if (code[i] === quote) {
+          i++; // consume closing quote
+          break;
+        }
+        i++;
+      }
+      const str = code.slice(start, i);
+      const token = `__DESYRA_MASK_${masks.length}__`;
+      masks.push(str);
+      result += token;
+      continue;
+    }
+
+    // Normal character
+    result += ch;
+    i++;
+  }
+
+  return {
+    maskedCode: result,
+    restore: (text: string) => {
+      let restored = text;
+      for (let idx = 0; idx < masks.length; idx++) {
+        restored = restored.replace(`__DESYRA_MASK_${idx}__`, () => masks[idx]);
+      }
+      return restored;
+    },
+  };
+}
+
+/**
  * Rewrites relative and project imports/exports in JavaScript module code to virtual specifiers (@desyra/...).
  * Handles static import/export ... from, side-effect imports, and string-literal dynamic imports.
  * Leaves bare package specifiers and https:// imports untouched.
+ * Only rewrites specifiers that resolve to an EXISTING project file; leaves missing targets untouched
+ * and emits a clear warning so the console and completeness check report it.
+ * Masks non-import strings, template literals, and comments to prevent false-positive rewrites.
  * Warns on dynamic import() with non-literal argument and on import.meta.url.
  */
 export function rewriteModuleSpecifiers(
@@ -350,10 +529,22 @@ export function rewriteModuleSpecifiers(
     }
 
     const cleanResolved = resolved.replace(/^\/+/, '');
+    const exists = allFiles.some((f) => f.path === cleanResolved);
+
+    if (!exists) {
+      warnings.push({
+        type: 'missing_file',
+        message: `${filePath} imports '${trimmed}' but the file does not exist`,
+        file: filePath,
+      });
+      return specifier; // Leave unchanged!
+    }
+
     return `@desyra/${cleanResolved}`;
   };
 
-  let rewritten = jsCode;
+  const { maskedCode, restore } = maskNonImportLiteralsAndComments(jsCode);
+  let rewritten = maskedCode;
 
   // 1. Static imports / exports with from:
   // e.g. import { x } from './ui.js' or export * from './sub.js'
@@ -385,7 +576,7 @@ export function rewriteModuleSpecifiers(
     }
   );
 
-  return rewritten;
+  return restore(rewritten);
 }
 
 export interface ProcessModulesResult {
