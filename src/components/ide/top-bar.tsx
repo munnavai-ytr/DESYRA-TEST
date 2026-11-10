@@ -2,7 +2,16 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Settings, ChevronDown, Check, Sparkles, Palette } from 'lucide-react';
+import {
+  ArrowLeft,
+  Settings,
+  ChevronDown,
+  Check,
+  Sparkles,
+  Palette,
+  History,
+  Download,
+} from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
 import { Tooltip } from '@/components/ui/tooltip';
 import { useToast } from '@/components/ui/toast';
@@ -24,6 +33,8 @@ export interface TopBarProps {
   onProviderChanged: (provider: SafeProviderInfo, modelId?: string) => void;
   projectDesign?: DesignSpec | null;
   onOpenDesignPanel?: () => void;
+  onOpenHistory?: () => void;
+  onOpenExportZip?: () => void;
 }
 
 export function TopBar({
@@ -35,6 +46,8 @@ export function TopBar({
   onProviderChanged,
   projectDesign,
   onOpenDesignPanel,
+  onOpenHistory,
+  onOpenExportZip,
 }: TopBarProps) {
   const { toast } = useToast();
 
@@ -141,16 +154,16 @@ export function TopBar({
   };
 
   return (
-    <header className="h-12 w-full bg-[var(--surface)] border-b border-[var(--border)] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-30 select-none">
+    <header className="h-12 w-full bg-[var(--surface)] border-b border-[var(--border)] px-2 sm:px-4 flex items-center justify-between gap-1.5 sm:gap-2 shrink-0 z-30 select-none">
       {/* Left: Back Link & Editable Title */}
-      <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 flex-1 overflow-hidden">
-        <Link href="/projects" tabIndex={-1} className="shrink-0 flex items-center justify-center min-w-[36px] min-h-[36px] sm:min-w-[40px] sm:min-h-[40px]">
+      <div className="flex items-center gap-1 sm:gap-2.5 min-w-0 flex-1 overflow-hidden">
+        <Link href="/projects" tabIndex={-1} className="shrink-0 flex items-center justify-center min-w-[32px] min-h-[36px] sm:min-w-[40px] sm:min-h-[40px]">
           <Tooltip content="All Projects" position="bottom">
             <IconButton
               size="sm"
               variant="ghost"
               aria-label="Back to all projects"
-              className="text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--elevated)] min-w-[36px] min-h-[36px]"
+              className="text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--elevated)] min-w-[32px] min-h-[36px]"
             >
               <ArrowLeft className="w-4 h-4" />
             </IconButton>
@@ -162,7 +175,7 @@ export function TopBar({
         </span>
 
         {/* Project Title (Inline edit, flex-1 min-w-0 with ellipsis) */}
-        <div className="flex-1 min-w-0 overflow-hidden pr-2">
+        <div className="flex-1 min-w-0 overflow-hidden pr-1 sm:pr-2">
           {isEditingTitle ? (
             <input
               ref={titleInputRef}
@@ -183,7 +196,7 @@ export function TopBar({
                   setTitleDraft(projectTitle);
                   setIsEditingTitle(true);
                 }}
-                className="text-xs sm:text-sm font-semibold text-[var(--text)] hover:text-[var(--accent)] hover:bg-[var(--elevated)] px-2 py-1 -mx-2 rounded-[var(--radius-sm)] transition-colors truncate block text-left w-full cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                className="text-xs sm:text-sm font-semibold text-[var(--text)] hover:text-[var(--accent)] hover:bg-[var(--elevated)] px-1.5 sm:px-2 py-1 -mx-1.5 sm:-mx-2 rounded-[var(--radius-sm)] transition-colors truncate block text-left w-full cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
               >
                 {projectTitle}
               </button>
@@ -192,20 +205,49 @@ export function TopBar({
         </div>
       </div>
 
-      {/* Right: Design Engine, Active Model Chip Popover & Settings */}
-      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+      {/* Right: Design Engine, History, Export ZIP, Active Model Chip Popover & Settings */}
+      <div className="flex items-center gap-1 sm:gap-2 shrink-0">
         {onOpenDesignPanel && (
           <Tooltip content="Design Engine & Theme Controls" position="bottom">
             <button
               type="button"
               onClick={onOpenDesignPanel}
-              className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+              aria-label="Design Engine & Theme Controls"
+              className="flex items-center justify-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer min-w-[34px] min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
             >
-              <Palette className="w-3.5 h-3.5 text-[var(--accent)]" />
-              <span className="font-medium text-[var(--text)] hidden sm:inline">Design</span>
+              <Palette className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+              <span className="font-medium text-[var(--text)] hidden lg:inline">Design</span>
               {projectDesign && (
-                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shrink-0 hidden sm:inline-block" />
               )}
+            </button>
+          </Tooltip>
+        )}
+
+        {onOpenHistory && (
+          <Tooltip content="Version History" position="bottom">
+            <button
+              type="button"
+              onClick={onOpenHistory}
+              aria-label="Version History"
+              className="flex items-center justify-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer min-w-[34px] min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            >
+              <History className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
+              <span className="font-medium text-[var(--text)] hidden lg:inline">History</span>
+            </button>
+          </Tooltip>
+        )}
+
+        {onOpenExportZip && (
+          <Tooltip content="Download ZIP archive" position="bottom">
+            <button
+              type="button"
+              onClick={onOpenExportZip}
+              aria-label="Download ZIP archive"
+              className="flex items-center justify-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer min-w-[34px] min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            >
+              <Download className="w-3.5 h-3.5 text-[var(--muted)] hover:text-[var(--text)] shrink-0" />
+              <span className="font-medium text-[var(--text)] hidden xl:inline">Export</span>
             </button>
           </Tooltip>
         )}
@@ -216,7 +258,7 @@ export function TopBar({
             onClick={() => setIsPopoverOpen((prev) => !prev)}
             aria-expanded={isPopoverOpen}
             aria-haspopup="true"
-            className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer max-w-[160px] sm:max-w-[240px] shrink-0 min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-[var(--radius-pill)] bg-[var(--elevated)] hover:bg-[#202026] border border-[var(--border)] text-xs text-[var(--muted)] hover:text-[var(--text)] transition-colors cursor-pointer max-w-[88px] sm:max-w-[200px] lg:max-w-[240px] shrink-0 min-h-[36px] sm:min-h-[32px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
           >
             <span
               className={`w-1.5 h-1.5 rounded-full shrink-0 ${

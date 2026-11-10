@@ -1,4 +1,4 @@
-# DESYRA — Premium AI App Builder (Push 7A of 10)
+# DESYRA — Premium AI App Builder (Push 8 of 10)
 
 DESYRA is a premium, precise, dark-themed AI application builder interface.
 
@@ -288,5 +288,35 @@ In Push 5.1, the streaming execution pipeline was re-architected to be strictly 
 7. **Defensive HTML-to-Markdown Converter**:
    - Stray HTML tags output by models in explanations are converted into clean Markdown before rendering, while preserving code inside markdown fences.
 
+## History, backups and ZIP format (Push 8)
+
+Push 8 adds content-addressed version history, reversible atomic restores, per-project ZIP export/import, multi-project backups, and storage health tools — 100% inside browser IndexedDB with zero telemetry or backend upload:
+
+1. **Storage Model & Dexie v7 Migration (`src/lib/db.ts`, `src/lib/history/`)**:
+   - **Schema v7**: Adds two IndexedDB tables alongside all preserved v1–v6 tables (`projects`, `providers`, `meta`, `modelCache`, `messages`, `files`, `previewStorage`, `modelSettings`):
+     - `blobs` (`hash` primary key, `content`, `size`): Content-addressed SHA-256 deduplicated file contents via Web Crypto (`crypto.subtle.digest`, with deterministic 64-bit FNV fallback if restricted).
+     - `snapshots` (`id`, indexed by `projectId` and `[projectId+createdAt]`): Stores lightweight `path -> hash` manifests, design/plan metadata (`meta.design`, sanitized `meta.plan`), timestamps, labels, optional notes, and pin flags.
+   - **Privacy Rule**: Snapshots, single-project ZIPs, and multi-project backups NEVER store or export API keys, `providers`, `encryptedKey`, passphrases, or `previewStorage` entries.
+   - **Storage Quota & Integrity**: Requests `navigator.storage.persist()` cleanly on first project creation/import, checks quota errors gracefully, trims unpinned snapshots per project to 60 (FIFO; pinned checkpoints never auto-expire), and runs a once-per-session idle orphan cleanup (`runStartupIntegrityCheck`).
+
+2. **Automatic & Manual Checkpoints**:
+   - **AI Turns**: Saves a baseline checkpoint (`Before: ...`) on the first build when files already exist and schedules an idle post-turn checkpoint after streaming stops (linking the message and version via `"View in history"`).
+   - **Manual Edits & Design Updates**: Debounced `design` snapshots after Design panel edits (1.2s) and idle `manual` snapshots after 2 minutes without code edits (flushed on page hide/unmount).
+   - **Safety Nets**: Creates pre-undo (`Before undo`) and pre-restore (`Before restore`) checkpoints before applying destructive rollbacks, and exposes an explicit **Save version** (`Ctrl/Cmd+S` outside the editor or from TopBar/History drawer) that pins checkpoints.
+
+3. **Version History Drawer & Myers Line Diff (`src/components/ide/history-panel.tsx`)**:
+   - Day-grouped paginated timeline (`25` entries per page) with manifest-only `+X ~Y -Z` delta badges (no file bodies loaded until inspected).
+   - Inspect any version against the previous version or current files with a linear-space Myers `O(ND)` line diff viewer, collapsed unchanged regions (`>= 7` lines), and a `> 4,000`-line performance guard.
+   - Per-file restore (`onlyPath`), atomic full-version restore (restoring files + design state inside a single transaction with an immediate Undo toast), Pin/Unpin, Rename, and Delete protections.
+
+4. **Single-Project ZIP Export & Import (`src/lib/zip/`)**:
+   - **Zero-Dependency ZIP Writer**: Writes standard PKWARE ZIP archives using Store (`0`), IEEE 802.3 CRC-32 checksums, UTF-8 filename flag bit `11` (`0x0800`), unified DOS timestamp, generated `README.md` (with CDN links and local HTTP server instructions when ES modules are present), and optional `.desyra/project.json`.
+   - **Secure ZIP Reader**: Supports both Store (`0`) and Deflate (`8` via `DecompressionStream('deflate-raw')`). Enforces strict path validation and rejects Zip-Slip (`..`, leading `/`, `\`, drive letters), Unix symlinks, encrypted archives, Zip64 markers, `> 1 MB` files, `> 50 MB` totals, and `> 500` files, while cleanly ignoring OS junk (`.DS_Store`, `__MACOSX/`, `.git/`, `node_modules/`) and reporting skipped binary files.
+   - **Design Fidelity on Import**: Plain third-party ZIPs import untouched (`design` remains unset); DESYRA bundles restore their `design` spec and automatically regenerate missing managed CSS (`css/tokens.css`, `css/base.css`, `css/components.css`).
+
+5. **Full Backup Export, Non-Overwriting Restore & Maintenance (`src/lib/backup/`, `/settings#backup-section`)**:
+   - Exports all projects into `desyra-backup-YYYY-MM-DD.zip` with a root `backup.json` manifest and opt-in `Include chat history` / `Include version history` toggles (both default OFF), live per-project progress, and `AbortSignal` cancel support.
+   - Restores selected projects from backup archives with brand-new project IDs (never overwriting existing projects), preserving remapped chat-to-snapshot links.
+   - Provides browser quota inspection (`navigator.storage.estimate()`), `"Clean up old versions"` (keeps pinned + last 10 unpinned versions per project with blob GC), and a 7-day backup reminder banner on `/projects`.
 
 

@@ -2,7 +2,14 @@ import Dexie, { type Table } from 'dexie';
 import { notify } from '@/components/ui/toast';
 import type { ProviderType } from '@/lib/providers';
 import type { EncryptedPayload } from '@/lib/crypto';
-import type { DesignSpec, ProjectPlan, ProjectCritique, DesignQuality } from '@/lib/design/types';
+import type {
+  DesignSpec,
+  ProjectPlan,
+  ProjectCritique,
+  DesignQuality,
+  ProjectDesignData,
+  DesignMode,
+} from '@/lib/design/types';
 
 export interface Project {
   id: string;
@@ -11,7 +18,7 @@ export interface Project {
   createdAt: number;
   updatedAt: number;
   autoStarted?: boolean;
-  design?: DesignSpec;
+  design?: DesignSpec | ProjectDesignData;
   plan?: ProjectPlan;
   critique?: ProjectCritique;
 }
@@ -44,7 +51,7 @@ export interface StoredProvider {
 
 export interface StoredModelCache {
   providerId: string;
-  models: any[];
+  models: unknown[];
   fetchedAt: number;
 }
 
@@ -82,11 +89,12 @@ export interface StoredMessage {
   completenessIssues?: CompletenessIssue[];
   promptKind?: 'design' | 'basic';
   designSpecId?: string;
+  snapshotId?: string;
 }
 
 export interface MetaItem {
   key: string;
-  value: any;
+  value: unknown;
 }
 
 export interface PreviewStorageItem {
@@ -104,8 +112,111 @@ export interface ModelSetting {
   updatedAt?: number;
 }
 
+export interface BlobRecord {
+  hash: string;
+  content: string;
+  size: number;
+}
+
+export type SnapshotKind =
+  | 'ai'
+  | 'manual'
+  | 'design'
+  | 'restore'
+  | 'checkpoint'
+  | 'import'
+  | 'duplicate';
+
+export interface SnapshotPlanSummary {
+  directionName?: string;
+  appType?: string;
+  status?: 'pending' | 'approved' | 'skipped';
+  presetId?: string;
+  fontPairId?: string;
+  mode?: DesignMode;
+  selectedFeaturesCount?: number;
+}
+
+export interface SnapshotMeta {
+  design?: ProjectDesignData | DesignSpec;
+  plan?: SnapshotPlanSummary;
+}
+
+export interface SnapshotRecord {
+  id: string;
+  projectId: string;
+  createdAt: number;
+  label: string;
+  kind: SnapshotKind;
+  messageId?: string;
+  fileCount: number;
+  totalBytes: number;
+  manifest: Record<string, string>;
+  meta: SnapshotMeta;
+  pinned?: boolean;
+  note?: string;
+}
+
 export const MAX_PREVIEW_STORAGE_TOTAL_BYTES = 1024 * 1024; // 1 MB cap
 export const MAX_PREVIEW_STORAGE_VALUE_BYTES = 200 * 1024; // 200 KB per value cap
+
+export const STORAGE_QUOTA_ERROR_MESSAGE =
+  'Not enough browser storage. Delete old versions or export a backup.';
+
+export function isQuotaExceededError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const candidate = err as {
+    name?: string;
+    code?: number;
+    message?: string;
+    inner?: unknown;
+  };
+  if (
+    candidate.name === 'QuotaExceededError' ||
+    candidate.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    candidate.code === 22 ||
+    candidate.code === 1014
+  ) {
+    return true;
+  }
+  if (candidate.inner && isQuotaExceededError(candidate.inner)) {
+    return true;
+  }
+  if (
+    typeof candidate.message === 'string' &&
+    /quota|storage full|disk full/i.test(candidate.message)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function getFriendlyStorageErrorMessage(err: unknown, fallback: string): string {
+  if (isQuotaExceededError(err)) {
+    return STORAGE_QUOTA_ERROR_MESSAGE;
+  }
+  if (err instanceof Error && err.message) {
+    return err.message;
+  }
+  return fallback;
+}
+
+export const DESYRA_V6_STORES = {
+  projects: 'id, title, createdAt, updatedAt, autoStarted',
+  providers: 'id, providerType, label, isDefault, createdAt, updatedAt, defaultModel, lastTestStatus',
+  meta: 'key',
+  modelCache: 'providerId, fetchedAt',
+  messages: 'id, projectId, createdAt, role',
+  files: 'id, projectId, path, [projectId+path], createdAt, updatedAt',
+  previewStorage: '[projectId+key], projectId',
+  modelSettings: '++id, [providerId+modelId], providerId, modelId',
+} as const;
+
+export const DESYRA_V7_STORES = {
+  ...DESYRA_V6_STORES,
+  blobs: 'hash, size',
+  snapshots: 'id, projectId, [projectId+createdAt], messageId, createdAt',
+} as const;
 
 export class DesyraDatabase extends Dexie {
   projects!: Table<Project, string>;
@@ -116,9 +227,11 @@ export class DesyraDatabase extends Dexie {
   files!: Table<ProjectFile, string>;
   previewStorage!: Table<PreviewStorageItem, [string, string]>;
   modelSettings!: Table<ModelSetting, number>;
+  blobs!: Table<BlobRecord, string>;
+  snapshots!: Table<SnapshotRecord, string>;
 
-  constructor() {
-    super('desyra_db');
+  constructor(dbName = 'desyra_db') {
+    super(dbName);
     this.version(1).stores({
       projects: 'id, title, createdAt, updatedAt',
     });
@@ -152,15 +265,15 @@ export class DesyraDatabase extends Dexie {
       previewStorage: '[projectId+key], projectId',
     });
     this.version(6).stores({
-      projects: 'id, title, createdAt, updatedAt, autoStarted',
-      providers: 'id, providerType, label, isDefault, createdAt, updatedAt, defaultModel, lastTestStatus',
-      meta: 'key',
-      modelCache: 'providerId, fetchedAt',
-      messages: 'id, projectId, createdAt, role',
-      files: 'id, projectId, path, [projectId+path], createdAt, updatedAt',
-      previewStorage: '[projectId+key], projectId',
-      modelSettings: '++id, [providerId+modelId], providerId, modelId',
+      ...DESYRA_V6_STORES,
     });
+    this.version(7)
+      .stores({
+        ...DESYRA_V7_STORES,
+      })
+      .upgrade(() => {
+        // Preserves all v1-v6 projects, files, messages, providers, previewStorage, meta, modelSettings
+      });
   }
 }
 
@@ -233,14 +346,21 @@ export async function createProject(idea: string, customTitle?: string): Promise
   };
 
   try {
+    const existingCount = await database.projects.count();
     await database.projects.add(project);
+    if (existingCount === 0) {
+      void requestPersistentStorageSafe();
+    }
     return project;
   } catch (error) {
     console.error('[DESYRA DB] Failed to create project:', error);
     notify({
       type: 'error',
       title: 'Storage Error',
-      message: 'Failed to save your project to local storage.',
+      message: getFriendlyStorageErrorMessage(
+        error,
+        'Failed to save your project to local storage.'
+      ),
     });
     return null;
   }
@@ -298,7 +418,7 @@ export async function updateProject(id: string, updates: Partial<Project>): Prom
   try {
     await database.projects.update(id, {
       ...updates,
-      updatedAt: Date.now(),
+      updatedAt: updates.updatedAt ?? Date.now(),
     });
     return true;
   } catch (error) {
@@ -306,34 +426,134 @@ export async function updateProject(id: string, updates: Partial<Project>): Prom
     notify({
       type: 'error',
       title: 'Storage Error',
-      message: `Failed to update project with ID ${id}.`,
+      message: getFriendlyStorageErrorMessage(
+        error,
+        `Failed to update project with ID ${id}.`
+      ),
     });
     return false;
   }
 }
 
 /**
- * Deletes a project by ID.
+ * Deletes unreferenced blobs inside an active Dexie rw transaction that includes snapshots and blobs.
  */
-export async function deleteProject(id: string): Promise<boolean> {
-  const database = getDb();
+export async function gcBlobsInTransaction(database: DesyraDatabase): Promise<number> {
+  const referencedHashes = new Set<string>();
+  await database.snapshots.each((snap) => {
+    if (snap.manifest) {
+      for (const hash of Object.values(snap.manifest)) {
+        referencedHashes.add(hash);
+      }
+    }
+  });
+  const allKeys = await database.blobs.toCollection().primaryKeys();
+  const orphanKeys = allKeys.filter((hash) => !referencedHashes.has(hash));
+  if (orphanKeys.length > 0) {
+    await database.blobs.bulkDelete(orphanKeys);
+  }
+  return orphanKeys.length;
+}
+
+/**
+ * Deletes a project and all owned data atomically inside ONE transaction, then runs inline blob GC.
+ */
+export async function deleteProject(
+  id: string,
+  customDb?: DesyraDatabase
+): Promise<boolean> {
+  const database = customDb ?? getDb();
   if (!database || !id) return false;
 
   try {
-    await database.projects.delete(id);
-    await database.files.where('projectId').equals(id).delete();
-    await database.messages.where('projectId').equals(id).delete();
-    await database.previewStorage.where('projectId').equals(id).delete();
+    await database.transaction(
+      'rw',
+      [
+        database.projects,
+        database.files,
+        database.messages,
+        database.snapshots,
+        database.blobs,
+        database.previewStorage,
+      ],
+      async () => {
+        await database.files.where('projectId').equals(id).delete();
+        await database.messages.where('projectId').equals(id).delete();
+        await database.snapshots.where('projectId').equals(id).delete();
+        await database.previewStorage.where('projectId').equals(id).delete();
+        await database.projects.delete(id);
+        await gcBlobsInTransaction(database);
+      }
+    );
     return true;
   } catch (error) {
     console.error(`[DESYRA DB] Failed to delete project ${id}:`, error);
     notify({
       type: 'error',
       title: 'Storage Error',
-      message: 'Could not delete project from local storage.',
+      message: getFriendlyStorageErrorMessage(
+        error,
+        'Could not delete project from local storage.'
+      ),
     });
     return false;
   }
+}
+
+/**
+ * Counts files, versions, and messages owned by a single project without reading file content.
+ */
+export async function getProjectOwnedCounts(
+  id: string,
+  customDb?: DesyraDatabase
+): Promise<{ fileCount: number; snapshotCount: number; messageCount: number }> {
+  const database = customDb ?? getDb();
+  if (!database || !id) {
+    return { fileCount: 0, snapshotCount: 0, messageCount: 0 };
+  }
+  try {
+    const [fileCount, snapshotCount, messageCount] = await Promise.all([
+      database.files.where('projectId').equals(id).count(),
+      database.snapshots.where('projectId').equals(id).count(),
+      database.messages.where('projectId').equals(id).count(),
+    ]);
+    return { fileCount, snapshotCount, messageCount };
+  } catch {
+    return { fileCount: 0, snapshotCount: 0, messageCount: 0 };
+  }
+}
+
+/**
+ * Returns file counts and snapshot counts for all projects using index keys only
+ * so /projects never loads full file contents or snapshot manifests.
+ */
+export async function getAllProjectCountsMap(
+  customDb?: DesyraDatabase
+): Promise<{
+  fileCounts: Record<string, number>;
+  snapshotCounts: Record<string, number>;
+}> {
+  const database = customDb ?? getDb();
+  const fileCounts: Record<string, number> = {};
+  const snapshotCounts: Record<string, number> = {};
+  if (!database) {
+    return { fileCounts, snapshotCounts };
+  }
+  try {
+    await database.files.orderBy('projectId').eachKey((key) => {
+      if (typeof key === 'string') {
+        fileCounts[key] = (fileCounts[key] ?? 0) + 1;
+      }
+    });
+    await database.snapshots.orderBy('projectId').eachKey((key) => {
+      if (typeof key === 'string') {
+        snapshotCounts[key] = (snapshotCounts[key] ?? 0) + 1;
+      }
+    });
+  } catch (error) {
+    console.error('[DESYRA DB] Failed to compute project counts via index keys:', error);
+  }
+  return { fileCounts, snapshotCounts };
 }
 
 /**
@@ -397,13 +617,33 @@ export async function clearAllDatabaseData(): Promise<boolean> {
   const database = getDb();
   if (!database) return false;
   try {
-    await database.projects.clear();
-    await database.providers.clear();
-    await database.meta.clear();
-    await database.modelCache.clear();
-    await database.messages.clear();
-    await database.files.clear();
-    await database.previewStorage.clear();
+    await database.transaction(
+      'rw',
+      [
+        database.projects,
+        database.providers,
+        database.meta,
+        database.modelCache,
+        database.messages,
+        database.files,
+        database.previewStorage,
+        database.modelSettings,
+        database.snapshots,
+        database.blobs,
+      ],
+      async () => {
+        await database.projects.clear();
+        await database.providers.clear();
+        await database.meta.clear();
+        await database.modelCache.clear();
+        await database.messages.clear();
+        await database.files.clear();
+        await database.previewStorage.clear();
+        await database.modelSettings.clear();
+        await database.snapshots.clear();
+        await database.blobs.clear();
+      }
+    );
     return true;
   } catch (error) {
     console.error('[DESYRA DB] Failed to clear all database data:', error);
@@ -444,7 +684,7 @@ export async function getModelCache(providerId: string): Promise<StoredModelCach
   }
 }
 
-export async function setModelCache(providerId: string, models: any[]): Promise<void> {
+export async function setModelCache(providerId: string, models: unknown[]): Promise<void> {
   const database = getDb();
   if (!database) return;
   try {
@@ -493,6 +733,16 @@ export async function updateProjectMessageContent(id: string, content: string): 
     await database.messages.update(id, { content });
   } catch (error) {
     console.error(`[DESYRA DB] Failed to update message ${id}:`, error);
+  }
+}
+
+export async function linkMessageSnapshot(messageId: string, snapshotId: string): Promise<void> {
+  const database = getDb();
+  if (!database || !messageId || !snapshotId) return;
+  try {
+    await database.messages.update(messageId, { snapshotId });
+  } catch (error) {
+    console.error(`[DESYRA DB] Failed to link snapshot ${snapshotId} to message ${messageId}:`, error);
   }
 }
 
@@ -861,3 +1111,65 @@ export async function setRunCriticAutomatically(enabled: boolean): Promise<void>
   }
 }
 
+const LAST_BACKUP_AT_KEY = 'desyra_last_backup_at';
+const BACKUP_REMINDER_DISMISSED_AT_KEY = 'desyra_backup_reminder_dismissed_at';
+const HISTORY_TRIM_NOTIFIED_KEY = 'desyra_history_trim_notified';
+
+export async function getLastBackupAt(): Promise<number | null> {
+  return getMetaValue<number>(LAST_BACKUP_AT_KEY);
+}
+
+export async function setLastBackupAt(timestamp = Date.now()): Promise<void> {
+  await setMetaValue(LAST_BACKUP_AT_KEY, timestamp);
+}
+
+export async function getBackupReminderDismissedAt(): Promise<number | null> {
+  return getMetaValue<number>(BACKUP_REMINDER_DISMISSED_AT_KEY);
+}
+
+export async function setBackupReminderDismissedAt(timestamp = Date.now()): Promise<void> {
+  await setMetaValue(BACKUP_REMINDER_DISMISSED_AT_KEY, timestamp);
+}
+
+export async function getHistoryTrimNotified(): Promise<boolean> {
+  const val = await getMetaValue<boolean>(HISTORY_TRIM_NOTIFIED_KEY);
+  return Boolean(val);
+}
+
+export async function setHistoryTrimNotified(val = true): Promise<void> {
+  await setMetaValue(HISTORY_TRIM_NOTIFIED_KEY, val);
+}
+
+export type PersistentStorageStatus = 'granted' | 'denied' | 'unsupported';
+
+export async function getPersistentStorageStatus(): Promise<PersistentStorageStatus> {
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.storage ||
+    typeof navigator.storage.persisted !== 'function'
+  ) {
+    return 'unsupported';
+  }
+  try {
+    const persisted = await navigator.storage.persisted();
+    return persisted ? 'granted' : 'denied';
+  } catch {
+    return 'unsupported';
+  }
+}
+
+export async function requestPersistentStorageSafe(): Promise<PersistentStorageStatus> {
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.storage ||
+    typeof navigator.storage.persist !== 'function'
+  ) {
+    return 'unsupported';
+  }
+  try {
+    const granted = await navigator.storage.persist();
+    return granted ? 'granted' : 'denied';
+  } catch {
+    return 'unsupported';
+  }
+}

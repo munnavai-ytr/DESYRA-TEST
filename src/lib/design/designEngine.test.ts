@@ -28,8 +28,8 @@ describe('Design Engine - Color Math & WCAG Contrast', () => {
     const seeds = ['#ff6b1a', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#06b6d4', '#e11d48'];
 
     for (const seed of seeds) {
-      const darkPalette = generatePalette(seed, 'dark', 'neo-tech-dark');
-      const lightPalette = generatePalette(seed, 'light', 'minimal');
+      const darkPalette = generatePalette(seed, 'dark', 'analogous');
+      const lightPalette = generatePalette(seed, 'light', 'monochrome');
 
       // Text vs BG >= 7:1 (AAA)
       expect(contrastRatio(darkPalette.text, darkPalette.bg)).toBeGreaterThanOrEqual(7.0);
@@ -133,6 +133,7 @@ describe('Design Engine - Static Design Linter', () => {
   <button style="height: 20px;">Click me</button>
 </body>
 </html>`,
+        createdAt: Date.now(),
         updatedAt: Date.now(),
       },
     ];
@@ -173,6 +174,7 @@ describe('Design Engine - Static Design Linter', () => {
   </main>
 </body>
 </html>`,
+        createdAt: Date.now(),
         updatedAt: Date.now(),
       },
     ];

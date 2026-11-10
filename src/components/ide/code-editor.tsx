@@ -33,6 +33,7 @@ export interface CodeEditorProps {
   projectId: string;
   file: ProjectFile | null;
   onFileUpdated?: (updatedFile: ProjectFile) => void;
+  onManualChange?: () => void;
   isVisible?: boolean;
 }
 
@@ -42,6 +43,7 @@ interface ActiveCodeEditorProps {
   projectId: string;
   file: ProjectFile;
   onFileUpdated?: (updatedFile: ProjectFile) => void;
+  onManualChange?: () => void;
   isVisible?: boolean;
 }
 
@@ -49,6 +51,7 @@ function ActiveCodeEditor({
   projectId,
   file,
   onFileUpdated,
+  onManualChange,
   isVisible = true,
 }: ActiveCodeEditorProps) {
   const [content, setContent] = useState<string>(file.content);
@@ -112,6 +115,7 @@ function ActiveCodeEditor({
         await updateFileContent(projectId, targetFile.path, textToSave);
         setLastSavedContent(textToSave);
         setSaveStatus('saved');
+        onManualChange?.();
         onFileUpdated?.({
           ...targetFile,
           content: textToSave,
@@ -122,7 +126,7 @@ function ActiveCodeEditor({
         setSaveStatus('error');
       }
     },
-    [projectId, isAiWriting, onFileUpdated]
+    [projectId, isAiWriting, onFileUpdated, onManualChange]
   );
 
   // Autosave debounce on content change (600ms)
@@ -275,7 +279,13 @@ function ActiveCodeEditor({
   );
 }
 
-export function CodeEditor({ projectId, file, onFileUpdated, isVisible = true }: CodeEditorProps) {
+export function CodeEditor({
+  projectId,
+  file,
+  onFileUpdated,
+  onManualChange,
+  isVisible = true,
+}: CodeEditorProps) {
   if (!file) {
     return (
       <div className="flex-1 h-full flex items-center justify-center p-6 bg-[var(--bg)] text-center">
@@ -294,6 +304,7 @@ export function CodeEditor({ projectId, file, onFileUpdated, isVisible = true }:
       projectId={projectId}
       file={file}
       onFileUpdated={onFileUpdated}
+      onManualChange={onManualChange}
       isVisible={isVisible}
     />
   );

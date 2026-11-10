@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Palette,
   Check,
@@ -43,6 +43,12 @@ import { getProject, type ProjectFile } from '@/lib/db';
 import type { SafeProviderInfo } from '@/lib/keys';
 import { StyleTile } from '@/components/chat/style-tile';
 import { runDesignCritic } from '@/lib/design/critic';
+import { isStreamingActive } from '@/lib/history/idle';
+import {
+  createSnapshot,
+  createSnapshotWithResult,
+  maybeNotifyFirstTrim,
+} from '@/lib/history/snapshots';
 
 export interface DesignPanelProps {
   projectId: string;
@@ -54,6 +60,7 @@ export interface DesignPanelProps {
   activeProvider?: SafeProviderInfo | null;
   activeModel?: string | null;
   onReopenPlan?: () => void;
+  onDesignChanged?: (spec: DesignSpec) => void;
 }
 
 export function DesignPanel({
@@ -66,6 +73,7 @@ export function DesignPanel({
   activeProvider,
   activeModel,
   onReopenPlan,
+  onDesignChanged,
 }: DesignPanelProps) {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<'theme' | 'review'>('theme');
@@ -140,11 +148,89 @@ export function DesignPanel({
     };
   }, [isOpen, projectId, spec]);
 
+  const designSnapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDesignLabelRef = useRef<string | null>(null);
+  const capturedPreDesignBaselineRef = useRef(false);
+
+  const scheduleDesignSnapshot = useCallback(
+    (newSpec: DesignSpec) => {
+      const presetName = STYLE_PRESETS[newSpec.presetId]?.name || newSpec.presetId;
+      const snapLabel = `Theme: ${presetName}`;
+      pendingDesignLabelRef.current = snapLabel;
+
+      if (designSnapshotTimerRef.current) {
+        clearTimeout(designSnapshotTimerRef.current);
+      }
+
+      designSnapshotTimerRef.current = setTimeout(async () => {
+        designSnapshotTimerRef.current = null;
+        const labelToSave = pendingDesignLabelRef.current;
+        pendingDesignLabelRef.current = null;
+        capturedPreDesignBaselineRef.current = false;
+
+        if (!labelToSave || isStreamingActive(projectId)) return;
+        try {
+          const outcome = await createSnapshotWithResult(projectId, {
+            label: labelToSave,
+            kind: 'design',
+          });
+          if (outcome.trimmedCount > 0) {
+            const shouldNotify = await maybeNotifyFirstTrim(outcome.trimmedCount);
+            if (shouldNotify) {
+              toast({
+                type: 'info',
+                title: 'Version History Limit Reached',
+                message:
+                  'DESYRA keeps the latest 60 unpinned versions automatically. Pinned checkpoints never expire.',
+                duration: 6000,
+              });
+            }
+          }
+        } catch (err) {
+          console.warn('[DESYRA] Failed debounced design snapshot:', err);
+        }
+      }, 1200);
+    },
+    [projectId, toast]
+  );
+
+  // Flush any pending design snapshot on unmount or project switch
+  useEffect(() => {
+    return () => {
+      if (designSnapshotTimerRef.current) {
+        clearTimeout(designSnapshotTimerRef.current);
+        designSnapshotTimerRef.current = null;
+      }
+      const pendingLabel = pendingDesignLabelRef.current;
+      pendingDesignLabelRef.current = null;
+      capturedPreDesignBaselineRef.current = false;
+      if (pendingLabel && !isStreamingActive(projectId)) {
+        void createSnapshot(projectId, {
+          label: pendingLabel,
+          kind: 'design',
+        });
+      }
+    };
+  }, [projectId]);
+
   // Apply design changes
   const applyDesignChanges = useCallback(
     async (newSpec: DesignSpec) => {
       try {
+        if (!capturedPreDesignBaselineRef.current && !isStreamingActive(projectId)) {
+          capturedPreDesignBaselineRef.current = true;
+          const existingFiles = await listFiles(projectId);
+          if (existingFiles.length > 0) {
+            await createSnapshot(projectId, {
+              label: 'Before design update',
+              kind: 'design',
+            });
+          }
+        }
+
         await installDesignSystem(projectId, newSpec, { overwrite: true });
+        onDesignChanged?.(newSpec);
+        scheduleDesignSnapshot(newSpec);
         toast({
           type: 'success',
           title: 'Design System Updated',
@@ -160,7 +246,7 @@ export function DesignPanel({
         });
       }
     },
-    [projectId, toast, loadData]
+    [projectId, toast, loadData, onDesignChanged, scheduleDesignSnapshot]
   );
 
   const updateSpecField = <K extends keyof DesignSpec>(field: K, value: DesignSpec[K]) => {

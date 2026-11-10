@@ -36,6 +36,7 @@ import type { DesignQuality } from '@/lib/design/types';
 import { ProviderCard } from '@/components/settings/provider-card';
 import { CustomProviderSection } from '@/components/settings/custom-provider-card';
 import { SecuritySection } from '@/components/settings/security-section';
+import { DataAndBackupSection } from '@/components/settings/data-and-backup-section';
 import { DangerZone } from '@/components/settings/danger-zone';
 import { UnlockModal } from '@/components/settings/unlock-modal';
 
@@ -539,6 +540,9 @@ export default function SettingsPage() {
           </div>
         </Card>
       )}
+
+      {/* Section: Storage & Backups */}
+      {!isLoading && <DataAndBackupSection onRefresh={loadData} />}
 
       {/* Section D: Danger Zone */}
       {!isLoading && <DangerZone onRefresh={loadData} />}

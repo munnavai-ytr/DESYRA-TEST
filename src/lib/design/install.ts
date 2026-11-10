@@ -3,12 +3,15 @@
  * Generates and installs managed CSS files into IndexedDB projects.
  */
 
-import type { DesignSpec, DesignMode, DesignDensity, DesignRadius, DesignMotion, DesignLanguage } from './types';
+import type {
+  DesignSpec,
+  ProjectDesignData,
+} from './types';
 import { generateTokensCss } from './css/generateTokensCss';
 import { generateBaseCss } from './css/generateBaseCss';
 import { generateComponentsCss } from './css/generateComponentsCss';
-import { getFile, createFile, updateFileContent, listFiles } from '@/lib/files';
-import { updateProject, getDb, type Project } from '@/lib/db';
+import { getFile, createFile, updateFileContent } from '@/lib/files';
+import { updateProject, getDb } from '@/lib/db';
 import { classifyIdea } from './classify';
 import { ARCHETYPES } from './archetypes';
 import { STYLE_PRESETS } from './presets';
@@ -32,12 +35,7 @@ export function computeStringHash(str: string): string {
   return (hash >>> 0).toString(16);
 }
 
-export interface ProjectDesignData {
-  spec: DesignSpec;
-  managedFiles: string[];
-  managedHashes: Record<string, string>;
-  updatedAt: number;
-}
+export type { ProjectDesignData };
 
 /**
  * Constructs a initial DesignSpec for a project prompt.
@@ -70,7 +68,7 @@ export function createSpecFromClassification(
     motion: archetype.defaultMotion,
     tokens: {
       mode: archetype.defaultMode,
-      palette: null as any, // Generated during token css build
+      palette: undefined as unknown as DesignSpec['tokens']['palette'], // Generated during token css build
       fontDisplay: FONT_PAIRS[fontPairId]?.displayFamily || 'Inter',
       fontBody: FONT_PAIRS[fontPairId]?.bodyFamily || 'Inter',
       fontMono: 'JetBrains Mono',
@@ -161,7 +159,7 @@ export async function installDesignSystem(
     updatedAt: Date.now(),
   };
 
-  await updateProject(projectId, { design: designData } as any);
+  await updateProject(projectId, { design: designData });
   aiFileStore.bumpRevision(projectId);
 
   return designData;
@@ -171,10 +169,15 @@ export async function installDesignSystem(
  * Normalizes a stored project design field (which might be DesignSpec or ProjectDesignData)
  * into a valid DesignSpec.
  */
-export function extractDesignSpec(design: any): DesignSpec | null {
-  if (!design) return null;
-  if (design.archetypeId && design.tokens) return design as DesignSpec;
-  if (design.spec && design.spec.archetypeId && design.spec.tokens) return design.spec as DesignSpec;
+export function extractDesignSpec(design: unknown): DesignSpec | null {
+  if (!design || typeof design !== 'object') return null;
+  const candidate = design as Partial<DesignSpec & ProjectDesignData>;
+  if (candidate.archetypeId && candidate.tokens) {
+    return candidate as DesignSpec;
+  }
+  if (candidate.spec && candidate.spec.archetypeId && candidate.spec.tokens) {
+    return candidate.spec;
+  }
   return null;
 }
 

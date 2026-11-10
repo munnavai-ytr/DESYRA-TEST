@@ -9,17 +9,27 @@ import { CodeEditor } from './code-editor';
 import { PreviewPane } from './preview-pane';
 import { MobileTabs, type MobileTab } from './mobile-tabs';
 import { DesignPanel } from './design-panel';
+import { HistoryPanel } from './history-panel';
+import { SaveVersionModal } from './save-version-modal';
+import { ExportZipModal } from './export-zip-modal';
 import { Tooltip } from '@/components/ui/tooltip';
 import { IconButton } from '@/components/ui/icon-button';
-import type { Project, ProjectFile } from '@/lib/db';
+import { useToast } from '@/components/ui/toast';
+import { getProject, type Project, type ProjectFile } from '@/lib/db';
 import type { DesignSpec } from '@/lib/design/types';
+import { extractDesignSpec } from '@/lib/design/install';
 import {
   listProviders,
-  isSessionLocked,
   type SafeProviderInfo,
 } from '@/lib/keys';
 import { listFiles, getFile } from '@/lib/files';
-import { useProjectFileRevision } from '@/lib/ai/aiFileStore';
+import { aiFileStore, useProjectFileRevision } from '@/lib/ai/aiFileStore';
+import { isStreamingActive } from '@/lib/history/idle';
+import {
+  createSnapshot,
+  createSnapshotWithResult,
+  maybeNotifyFirstTrim,
+} from '@/lib/history/snapshots';
 
 export interface IdeLayoutProps {
   initialProject: Project;
@@ -30,11 +40,22 @@ export type WorkspaceTab = 'preview' | 'code';
 const STORAGE_DIVIDER_KEY = 'desyra_ide_divider_ratio';
 const DEFAULT_DESKTOP_RATIO = 0.35;
 const DEFAULT_TABLET_RATIO = 0.40;
+const MANUAL_EDIT_IDLE_COOLDOWN_MS = 120_000;
 
 export function IdeLayout({ initialProject }: IdeLayoutProps) {
+  const { toast } = useToast();
   const [project, setProject] = useState<Project>(initialProject);
-  const [projectDesign, setProjectDesign] = useState<DesignSpec | null>(initialProject.design ?? null);
+  const [projectDesign, setProjectDesign] = useState<DesignSpec | null>(() =>
+    extractDesignSpec(initialProject.design)
+  );
   const [isDesignPanelOpen, setIsDesignPanelOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [historyInitialSnapshotId, setHistoryInitialSnapshotId] = useState<string | null>(null);
+  const [isSaveVersionOpen, setIsSaveVersionOpen] = useState(false);
+  const [exportModalTarget, setExportModalTarget] = useState<{
+    snapshotId?: string;
+    snapshotLabel?: string;
+  } | null>(null);
 
   // Active Provider & Model state
   const [providers, setProviders] = useState<SafeProviderInfo[]>([]);
@@ -89,6 +110,99 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
       sendChatPromptRef.current(fixPrompt);
     }
   }, [isMobile]);
+
+  // Manual edit cooldown snapshot tracker (2 minutes of inactivity)
+  const manualDirtyRef = useRef(false);
+  const manualTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleManualChange = useCallback(() => {
+    manualDirtyRef.current = true;
+    if (manualTimerRef.current) {
+      clearTimeout(manualTimerRef.current);
+    }
+    manualTimerRef.current = setTimeout(async () => {
+      manualTimerRef.current = null;
+      if (!manualDirtyRef.current) return;
+      if (isStreamingActive(project.id) || aiFileStore.isAnyFileWriting(project.id)) {
+        return;
+      }
+      manualDirtyRef.current = false;
+      try {
+        const outcome = await createSnapshotWithResult(project.id, {
+          label: 'Manual edits',
+          kind: 'manual',
+        });
+        if (outcome.trimmedCount > 0) {
+          const shouldNotify = await maybeNotifyFirstTrim(outcome.trimmedCount);
+          if (shouldNotify) {
+            toast({
+              type: 'info',
+              title: 'Version History Limit Reached',
+              message:
+                'DESYRA keeps the latest 60 unpinned versions automatically. Pinned checkpoints never expire.',
+              duration: 6000,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[DESYRA] Manual idle snapshot failed:', err);
+      }
+    }, MANUAL_EDIT_IDLE_COOLDOWN_MS);
+  }, [project.id, toast]);
+
+  useEffect(() => {
+    const flushPendingManualSnapshot = () => {
+      if (
+        manualDirtyRef.current &&
+        !isStreamingActive(project.id) &&
+        !aiFileStore.isAnyFileWriting(project.id)
+      ) {
+        manualDirtyRef.current = false;
+        void createSnapshot(project.id, {
+          label: 'Manual edits',
+          kind: 'manual',
+        });
+      }
+    };
+
+    window.addEventListener('pagehide', flushPendingManualSnapshot);
+    return () => {
+      window.removeEventListener('pagehide', flushPendingManualSnapshot);
+      if (manualTimerRef.current) {
+        clearTimeout(manualTimerRef.current);
+        manualTimerRef.current = null;
+      }
+      flushPendingManualSnapshot();
+    };
+  }, [project.id]);
+
+  const handleOpenHistory = useCallback((snapshotId?: string) => {
+    setHistoryInitialSnapshotId(snapshotId ?? null);
+    setIsHistoryOpen(true);
+  }, []);
+
+  const handleProjectRestored = useCallback(async () => {
+    manualDirtyRef.current = false;
+    if (manualTimerRef.current) {
+      clearTimeout(manualTimerRef.current);
+      manualTimerRef.current = null;
+    }
+    const freshProj = await getProject(project.id);
+    if (freshProj) {
+      setProject(freshProj);
+      setProjectDesign(extractDesignSpec(freshProj.design));
+    }
+    const latestFiles = await listFiles(project.id);
+    setFilesCount(latestFiles.length);
+    setSelectedFile((currentSelected) => {
+      if (!latestFiles.length) return null;
+      if (currentSelected) {
+        const match = latestFiles.find((f) => f.path === currentSelected.path);
+        if (match) return match;
+      }
+      return latestFiles.find((f) => f.path === 'index.html') || latestFiles[0];
+    });
+  }, [project.id]);
 
   // Refresh provider and file data
   const refreshIdeData = useCallback(() => {
@@ -375,6 +489,8 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
     setActiveModel(modelId || provider.defaultModel || null);
   };
 
+  const activeDesignSpec = projectDesign ?? extractDesignSpec(project.design);
+
   return (
     <div
       style={{
@@ -393,8 +509,10 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
         activeProvider={activeProvider}
         activeModel={activeModel}
         onProviderChanged={handleProviderChanged}
-        projectDesign={projectDesign || project.design}
+        projectDesign={activeDesignSpec}
         onOpenDesignPanel={() => setIsDesignPanelOpen(true)}
+        onOpenHistory={() => handleOpenHistory()}
+        onOpenExportZip={() => setExportModalTarget({})}
       />
 
       {/* Main Body - Viewport Area */}
@@ -414,11 +532,12 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               onOpenFile={handleOpenFileFromPath}
               onRefreshProviders={refreshIdeData}
               onRegisterSendHandler={handleRegisterSendHandler}
-              projectDesign={projectDesign || project.design}
+              projectDesign={activeDesignSpec}
               onDesignUpdated={(spec) => {
                 setProjectDesign(spec);
                 setProject((p) => ({ ...p, design: spec }));
               }}
+              onOpenHistory={handleOpenHistory}
             />
           </div>
 
@@ -537,6 +656,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
                           handleSelectFile(f);
                           setIsFileTreeOpen(false); // Close drawer on tablet after file selection
                         }}
+                        onManualChange={handleManualChange}
                       />
                     </div>
                   </div>
@@ -551,6 +671,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
                       onSelectFile={handleSelectFile}
                       onToggleCollapse={() => setIsFileTreeOpen(false)}
                       isCollapsible
+                      onManualChange={handleManualChange}
                     />
                   </div>
                 )
@@ -569,6 +690,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
                     projectId={project.id}
                     file={selectedFile}
                     onFileUpdated={(updated) => setSelectedFile(updated)}
+                    onManualChange={handleManualChange}
                     isVisible={workspaceTab === 'code'}
                   />
                 )}
@@ -594,11 +716,12 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               onOpenFile={handleOpenFileFromPath}
               onRefreshProviders={refreshIdeData}
               onRegisterSendHandler={handleRegisterSendHandler}
-              projectDesign={projectDesign || project.design}
+              projectDesign={activeDesignSpec}
               onDesignUpdated={(spec) => {
                 setProjectDesign(spec);
                 setProject((p) => ({ ...p, design: spec }));
               }}
+              onOpenHistory={handleOpenHistory}
             />
           </div>
 
@@ -628,6 +751,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
                 handleSelectFile(f);
                 setMobileTab('code'); // Selecting a file switches to Code
               }}
+              onManualChange={handleManualChange}
             />
           </div>
 
@@ -641,6 +765,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
               projectId={project.id}
               file={selectedFile}
               onFileUpdated={(updated) => setSelectedFile(updated)}
+              onManualChange={handleManualChange}
               isVisible={mobileTab === 'code'}
             />
           </div>
@@ -659,7 +784,7 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
       {/* Design Engine Slide-Over Panel */}
       <DesignPanel
         projectId={project.id}
-        projectDesign={projectDesign || project.design}
+        projectDesign={activeDesignSpec}
         isOpen={isDesignPanelOpen}
         onClose={() => setIsDesignPanelOpen(false)}
         onFixWithAi={handleFixWithAi}
@@ -669,6 +794,48 @@ export function IdeLayout({ initialProject }: IdeLayoutProps) {
           setIsDesignPanelOpen(false);
           setMobileTab('chat');
         }}
+        onDesignChanged={(spec) => {
+          setProjectDesign(spec);
+          setProject((p) => ({ ...p, design: spec }));
+        }}
+      />
+
+      {/* Version History Drawer / Mobile Sheet */}
+      <HistoryPanel
+        projectId={project.id}
+        projectTitle={project.title}
+        isOpen={isHistoryOpen}
+        onClose={() => {
+          setIsHistoryOpen(false);
+          setHistoryInitialSnapshotId(null);
+        }}
+        initialSnapshotId={historyInitialSnapshotId}
+        onOpenSaveVersion={() => setIsSaveVersionOpen(true)}
+        onOpenExportSnapshot={(snapshotId, snapshotLabel) =>
+          setExportModalTarget({ snapshotId, snapshotLabel })
+        }
+        onProjectRestored={handleProjectRestored}
+        onOpenFile={handleOpenFileFromPath}
+      />
+
+      {/* Save Version Checkpoint Modal */}
+      <SaveVersionModal
+        isOpen={isSaveVersionOpen}
+        onClose={() => setIsSaveVersionOpen(false)}
+        projectId={project.id}
+        onSaved={(snapshotId) => {
+          setHistoryInitialSnapshotId(snapshotId);
+        }}
+      />
+
+      {/* Export ZIP Modal */}
+      <ExportZipModal
+        isOpen={Boolean(exportModalTarget)}
+        onClose={() => setExportModalTarget(null)}
+        projectId={project.id}
+        projectTitle={project.title}
+        snapshotId={exportModalTarget?.snapshotId}
+        snapshotLabel={exportModalTarget?.snapshotLabel}
       />
     </div>
   );

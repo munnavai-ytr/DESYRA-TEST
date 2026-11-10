@@ -7,6 +7,8 @@ import { Settings, FolderGit2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip } from '@/components/ui/tooltip';
 import { hasAnyKey } from '@/lib/keys';
+import { scheduleIdleWork } from '@/lib/history/idle';
+import { runStartupIntegrityCheck } from '@/lib/history/snapshots';
 
 export function Header() {
   const pathname = usePathname();
@@ -14,6 +16,12 @@ export function Header() {
   const isProjectsActive = pathname === '/projects';
   const isSettingsActive = pathname === '/settings';
   const [hasKeys, setHasKeys] = useState<boolean>(true); // default true to avoid layout flicker before check
+
+  useEffect(() => {
+    return scheduleIdleWork(() => {
+      void runStartupIntegrityCheck();
+    });
+  }, []);
 
   useEffect(() => {
     let isMounted = true;

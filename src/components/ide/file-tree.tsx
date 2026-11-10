@@ -52,6 +52,7 @@ export interface FileTreeProps {
   onSelectFile: (file: ProjectFile) => void;
   onToggleCollapse?: () => void;
   isCollapsible?: boolean;
+  onManualChange?: () => void;
 }
 
 // Helper for selecting icon based on filename
@@ -241,6 +242,7 @@ export function FileTree({
   onSelectFile,
   onToggleCollapse,
   isCollapsible = false,
+  onManualChange,
 }: FileTreeProps) {
   const { toast } = useToast();
 
@@ -436,6 +438,7 @@ export function FileTree({
       }
 
       await refreshFiles();
+      onManualChange?.();
       onSelectFile(created);
       setIsNewFileModalOpen(false);
       setNewFilePath('');
@@ -466,6 +469,7 @@ export function FileTree({
       });
 
       await refreshFiles();
+      onManualChange?.();
       if (selectedFilePath === fileToRename.path) {
         const fullRenamed = await getFile(projectId, validation.normalizedPath!);
         if (fullRenamed) {
@@ -494,6 +498,7 @@ export function FileTree({
       });
 
       await refreshFiles();
+      onManualChange?.();
       setFileToDelete(null);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -517,6 +522,7 @@ export function FileTree({
       });
 
       await refreshFiles();
+      onManualChange?.();
       setFolderToDelete(null);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

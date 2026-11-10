@@ -38,6 +38,16 @@ import {
   type Project,
   type CompletenessIssue,
 } from '@/lib/db';
+import {
+  markStreamingActive,
+  isStreamingActive,
+  scheduleIdleWork,
+} from '@/lib/history/idle';
+import {
+  createSnapshot,
+  createSnapshotWithResult,
+  maybeNotifyFirstTrim,
+} from '@/lib/history/snapshots';
 import type { DesignSpec, ProjectPlan } from '@/lib/design/types';
 import { PlanCard, buildSpecFromSelections } from '@/components/chat/plan-card';
 import { generateBrief } from '@/lib/design/brief';
@@ -79,6 +89,7 @@ export interface ChatPaneProps {
   onRegisterSendHandler?: (handler: (prompt: string) => Promise<void>) => void;
   projectDesign?: DesignSpec | null;
   onDesignUpdated?: (spec: DesignSpec) => void;
+  onOpenHistory?: (snapshotId?: string) => void;
 }
 
 interface MessageItemProps {
@@ -91,6 +102,7 @@ interface MessageItemProps {
   onRegeneratePlan?: (message: StoredMessage) => void;
   onSkipPlanReview?: (planData: ProjectPlan) => void;
   onAlwaysSkipPlanReview?: (planData: ProjectPlan) => void;
+  onOpenHistory?: (snapshotId?: string) => void;
   isPlanRegenerating?: boolean;
 }
 
@@ -106,6 +118,7 @@ const MessageItem = React.memo(
     onRegeneratePlan,
     onSkipPlanReview,
     onAlwaysSkipPlanReview,
+    onOpenHistory,
     isPlanRegenerating,
   }: MessageItemProps) {
     const [isDismissed, setIsDismissed] = useState(false);
@@ -287,6 +300,15 @@ const MessageItem = React.memo(
           {message.completionTokens !== undefined && (
             <span>· {message.completionTokens.toLocaleString()} tokens</span>
           )}
+          {message.snapshotId && onOpenHistory && (
+            <button
+              type="button"
+              onClick={() => onOpenHistory(message.snapshotId)}
+              className="text-[var(--accent)] hover:underline cursor-pointer font-medium"
+            >
+              · View in history
+            </button>
+          )}
           {message.finishReason === 'length' && (
             <span className="text-[var(--warning)] font-medium">
               · Output limit reached{message.completionTokens ? ` (about ${message.completionTokens.toLocaleString()} tokens)` : ''}. The answer was cut off.
@@ -313,7 +335,9 @@ const MessageItem = React.memo(
     prev.message.completenessIssues === next.message.completenessIssues &&
     prev.message.finishReason === next.message.finishReason &&
     prev.message.promptKind === next.message.promptKind &&
-    prev.message.designSpecId === next.message.designSpecId
+    prev.message.designSpecId === next.message.designSpecId &&
+    prev.message.snapshotId === next.message.snapshotId &&
+    prev.onOpenHistory === next.onOpenHistory
 );
 
 export interface StreamingFileOperation {
@@ -439,6 +463,7 @@ export function ChatPane({
   onRegisterSendHandler,
   projectDesign,
   onDesignUpdated,
+  onOpenHistory,
 }: ChatPaneProps) {
   const { toast } = useToast();
 
@@ -469,6 +494,96 @@ export function ChatPane({
   const uiFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
   const uiFlushRafRef = useRef<number | null>(null);
   const lastUiFlushTimeRef = useRef<number>(0);
+
+  // Deferred post-AI turn snapshot tracking (runs in browser idle time)
+  const pendingSnapshotCancelRef = useRef<(() => void) | null>(null);
+  const pendingSnapshotArgsRef = useRef<{ messageId: string; label: string } | null>(null);
+  const isMountedRef = useRef(true);
+
+  const commitPostTurnSnapshot = useCallback(
+    async (messageId: string, label: string) => {
+      if (isStreamingActive(project.id) || aiFileStore.isAnyFileWriting(project.id)) {
+        return;
+      }
+      pendingSnapshotArgsRef.current = null;
+      try {
+        const outcome = await createSnapshotWithResult(project.id, {
+          label,
+          kind: 'ai',
+          messageId,
+        });
+        if (outcome.snapshot && isMountedRef.current) {
+          const snapId = outcome.snapshot.id;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? { ...m, snapshotId: snapId } : m))
+          );
+        }
+        if (outcome.trimmedCount > 0) {
+          const shouldNotify = await maybeNotifyFirstTrim(outcome.trimmedCount);
+          if (shouldNotify) {
+            toast({
+              type: 'info',
+              title: 'Version History Limit Reached',
+              message:
+                'DESYRA keeps the latest 60 unpinned versions automatically. Pinned checkpoints never expire.',
+              duration: 6000,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[DESYRA] Post-turn snapshot failed:', err);
+      }
+    },
+    [project.id, toast]
+  );
+
+  const schedulePostTurnSnapshot = useCallback(
+    (messageId: string, promptLabel: string) => {
+      if (pendingSnapshotCancelRef.current) {
+        pendingSnapshotCancelRef.current();
+        pendingSnapshotCancelRef.current = null;
+      }
+      const cleanLabel = promptLabel.replace(/\s+/g, ' ').trim();
+      const label = cleanLabel ? `AI: ${cleanLabel.slice(0, 44)}` : 'AI build changes';
+      pendingSnapshotArgsRef.current = { messageId, label };
+      pendingSnapshotCancelRef.current = scheduleIdleWork(async () => {
+        pendingSnapshotCancelRef.current = null;
+        await commitPostTurnSnapshot(messageId, label);
+      });
+    },
+    [commitPostTurnSnapshot]
+  );
+
+  const flushPendingPostTurnSnapshot = useCallback(async () => {
+    if (pendingSnapshotCancelRef.current) {
+      pendingSnapshotCancelRef.current();
+      pendingSnapshotCancelRef.current = null;
+    }
+    const pending = pendingSnapshotArgsRef.current;
+    if (pending) {
+      await commitPostTurnSnapshot(pending.messageId, pending.label);
+    }
+  }, [commitPostTurnSnapshot]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (pendingSnapshotCancelRef.current) {
+        pendingSnapshotCancelRef.current();
+        pendingSnapshotCancelRef.current = null;
+      }
+      const pending = pendingSnapshotArgsRef.current;
+      if (pending && !isStreamingActive(project.id) && !aiFileStore.isAnyFileWriting(project.id)) {
+        pendingSnapshotArgsRef.current = null;
+        void createSnapshotWithResult(project.id, {
+          label: pending.label,
+          kind: 'ai',
+          messageId: pending.messageId,
+        });
+      }
+    };
+  }, [project.id]);
 
   // Load project messages from IndexedDB
   const loadMessages = useCallback(async () => {
@@ -607,6 +722,10 @@ export function ChatPane({
     if (!msg.undoEntries || msg.undoEntries.length === 0) return;
 
     try {
+      await createSnapshot(project.id, {
+        label: 'Before undo',
+        kind: 'restore',
+      });
       const result = await executeUndoForMessage(project.id, msg.undoEntries);
 
       if (result.skippedFiles.length > 0) {
@@ -696,6 +815,19 @@ export function ChatPane({
 
     // 2. Fetch current project files for context
     const currentFiles = await listFiles(project.id);
+
+    // Ensure any un-snapshotted user/previous changes are captured before AI streams over files
+    if (currentFiles.length > 0) {
+      try {
+        const cleanPrompt = userPrompt.replace(/\s+/g, ' ').trim();
+        await createSnapshot(project.id, {
+          label: cleanPrompt ? `Before: ${cleanPrompt.slice(0, 42)}` : 'Before AI changes',
+          kind: 'ai',
+        });
+      } catch (err) {
+        console.warn('[DESYRA] Pre-AI snapshot warning:', err);
+      }
+    }
 
     // 3. Build context with System Prompt + Project Files + Compact History
     const apiMessages = buildAiChatContext({
@@ -841,6 +973,7 @@ export function ChatPane({
     let lastUsage: { completionTokens?: number; totalTokens?: number } | undefined = undefined;
     let resolvedMaxTokens: number | undefined = undefined;
 
+    markStreamingActive(project.id, true);
     try {
       if (activeProvider && activeModel) {
         resolvedMaxTokens = await resolveMaxOutputTokens(activeProvider, activeModel);
@@ -904,6 +1037,10 @@ export function ChatPane({
 
         await saveProjectMessage(assistantMessage);
         setMessages((prev) => [...prev, assistantMessage]);
+
+        // Clear active streaming marker before scheduling deferred post-AI snapshot
+        markStreamingActive(project.id, false);
+        schedulePostTurnSnapshot(assistantMsgId, userPrompt);
 
         // Auto-run AI design critic in the background if enabled and first successful build
         if (lastFinishReason === 'stop' && issues.length === 0 && resolvedDesign && activeProvider && activeModel) {
@@ -973,6 +1110,8 @@ export function ChatPane({
           };
           await saveProjectMessage(partialMessage);
           setMessages((prev) => [...prev, partialMessage]);
+          markStreamingActive(project.id, false);
+          schedulePostTurnSnapshot(assistantMsgId, userPrompt);
         }
         return { success: false, issues: [], aborted: true };
       } else {
@@ -1000,6 +1139,8 @@ export function ChatPane({
         }
         return { success: false, issues: [], aborted: false };
       }
+    } finally {
+      markStreamingActive(project.id, false);
     }
   };
 
@@ -1007,7 +1148,14 @@ export function ChatPane({
     setIsStreaming(true);
     setAutoContinueStatus('Starting build...');
     try {
-      await updateProject(project.id, { plan: updatedPlan, design: spec as any });
+      const preFiles = await listFiles(project.id);
+      if (preFiles.length > 0) {
+        await createSnapshot(project.id, {
+          label: 'Before design plan apply',
+          kind: 'design',
+        });
+      }
+      await updateProject(project.id, { plan: updatedPlan, design: spec });
       await installDesignSystem(project.id, spec);
       if (onDesignUpdated) {
         onDesignUpdated(spec);
@@ -1053,6 +1201,7 @@ export function ChatPane({
 
           for (let round = 1; round <= 3; round++) {
             if (abortController.signal.aborted) break;
+            await flushPendingPostTurnSnapshot();
             setAutoContinueStatus(`Auto-continue ${round}/3`);
             const currentFiles = await listFiles(project.id);
             const continuePrompt = buildContinueMessage(currentIssues, currentFiles, spec);
@@ -1355,6 +1504,7 @@ export function ChatPane({
         for (let round = 1; round <= 3; round++) {
           if (abortController.signal.aborted) break;
 
+          await flushPendingPostTurnSnapshot();
           setAutoContinueStatus(`Auto-continue ${round}/3`);
 
           const currentFiles = await listFiles(project.id);
@@ -1585,6 +1735,7 @@ export function ChatPane({
               onRegeneratePlan={handleRegeneratePlan}
               onSkipPlanReview={handleSkipPlanReview}
               onAlwaysSkipPlanReview={handleAlwaysSkipPlanReview}
+              onOpenHistory={onOpenHistory}
               isPlanRegenerating={isPlanRegenerating}
             />
           ))}

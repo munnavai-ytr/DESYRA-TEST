@@ -248,3 +248,9 @@ export interface ProjectCritique {
   createdAt: number;
 }
 
+export interface ProjectDesignData {
+  spec: DesignSpec;
+  managedFiles: string[];
+  managedHashes: Record<string, string>;
+  updatedAt: number;
+}

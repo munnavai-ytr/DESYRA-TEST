@@ -5,12 +5,18 @@ import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastItem {
   id: string;
   type: ToastType;
   title?: string;
   message: string;
   duration?: number;
+  action?: ToastAction;
 }
 
 interface ToastContextType {
@@ -127,6 +133,19 @@ function ToastCard({ toast, onDismiss }: { toast: ToastItem; onDismiss: () => vo
         <div className="text-xs text-[var(--muted)] leading-relaxed break-words">
           {toast.message}
         </div>
+        {toast.action && (
+          <button
+            type="button"
+            onClick={() => {
+              const handler = toast.action?.onClick;
+              onDismiss();
+              handler?.();
+            }}
+            className="mt-2 inline-flex items-center px-2.5 py-1 rounded-[var(--radius-sm)] bg-[var(--elevated)] hover:bg-[var(--border)] border border-[var(--border)] text-[11px] font-semibold text-[var(--accent)] transition-colors cursor-pointer"
+          >
+            {toast.action.label}
+          </button>
+        )}
       </div>
       <button
         onClick={onDismiss}

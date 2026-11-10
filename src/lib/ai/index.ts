@@ -140,7 +140,7 @@ export async function resolveMaxOutputTokens(
   if (!limit) {
     const cached = await getModelCache(provider.id);
     if (cached?.models && Array.isArray(cached.models)) {
-      const match = cached.models.find((m: any) => m.id === modelId);
+      const match = (cached.models as ModelInfo[]).find((m) => m?.id === modelId);
       if (match?.outputTokenLimit) {
         limit = match.outputTokenLimit;
       }
